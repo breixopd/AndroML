@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+test "${STORE_SUBMISSIONS_ENABLED:-false}" = 'false'
+
 version_file="VERSION"
 config_file="release-please-config.json"
 manifest_file=".release-please-manifest.json"
@@ -8,6 +10,7 @@ manifest_file=".release-please-manifest.json"
 test -s "$version_file"
 test -s "$config_file"
 test -s "$manifest_file"
+test -s CHANGELOG.md
 
 version="$(tr -d '[:space:]' < "$version_file")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -15,7 +18,8 @@ version="$(tr -d '[:space:]' < "$version_file")"
 jq -e --arg version "$version" \
     '.packages["."]["release-type"] == "simple" and
      .packages["."]["version-file"] == "VERSION" and
-     .packages["."]["changelog-path"] == "CHANGELOG.md"' \
+     .packages["."]["changelog-path"] == "CHANGELOG.md" and
+     .packages["."]["include-v-in-tag"] == true' \
     "$config_file" >/dev/null
 jq -e --arg version "$version" '.["."] == $version' "$manifest_file" >/dev/null
 

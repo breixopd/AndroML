@@ -2,6 +2,7 @@
 set -euo pipefail
 
 version_name="${1:?usage: package-test-release.sh <semver>}"
+[[ "$version_name" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 apk_source="app/build/outputs/apk/oss/release/app-oss-release.apk"
 artifact_dir="dist/test-release"
 artifact_name="androml-oss-universal-v${version_name}.apk"
@@ -32,5 +33,7 @@ jq -n \
       artifact: $apk, signing_certificate_sha256: $certificate_sha256,
       store_submissions_enabled: false}' \
     > "$artifact_dir/$manifest_name"
+
+test "$(find "$artifact_dir" -maxdepth 1 -type f | wc -l)" -eq 4
 
 printf 'release_artifact_dir=%s\n' "$artifact_dir"

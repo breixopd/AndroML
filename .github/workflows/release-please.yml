@@ -8,6 +8,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: github-test-release
+  cancel-in-progress: false
+
 env:
   STORE_SUBMISSIONS_ENABLED: 'false'
 

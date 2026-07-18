@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: github-test-release-recovery-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
 env:
   STORE_SUBMISSIONS_ENABLED: 'false'
   RELEASE_TAG: ${{ inputs.tag_name }}
