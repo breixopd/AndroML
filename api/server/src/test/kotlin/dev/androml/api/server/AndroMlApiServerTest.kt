@@ -12,6 +12,9 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.http.content.OutgoingContent
+import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.writeStringUtf8
 import io.ktor.server.testing.testApplication
 import java.util.Collections
 import java.net.ServerSocket
@@ -54,6 +57,32 @@ class AndroMlApiServerTest {
         }
         assertEquals(HttpStatusCode.OK, response.status)
         assertTrue(response.bodyAsText().contains("data: [DONE]"))
+    }
+
+    @Test
+    fun chunkedRequestBodiesAreBoundedEvenWithoutContentLength() = testApplication {
+        val generated = ApiKeyCodec.generate("test", setOf(ApiScope.Inference), nowEpochMillis = 1L)
+        val server = AndroMlApiServer(
+            config = ApiServerConfig(maxRequestBodyBytes = 1024),
+            apiKeys = { listOf(generated.record) },
+            models = { listOf("fake") },
+            inference = object : ApiInferenceGateway {
+                override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flowOf()
+            },
+        )
+        application { with(server) { module() } }
+
+        val response = client.post("/v1/chat/completions") {
+            header(HttpHeaders.Authorization, "Bearer ${generated.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody(object : OutgoingContent.WriteChannelContent() {
+                override suspend fun writeTo(channel: ByteWriteChannel) {
+                    channel.writeStringUtf8("{" + "x".repeat(2_048) + "}")
+                }
+            })
+        }
+
+        assertEquals(HttpStatusCode.PayloadTooLarge, response.status)
     }
 
     @Test

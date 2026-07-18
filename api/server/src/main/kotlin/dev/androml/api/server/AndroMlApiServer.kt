@@ -23,7 +23,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.engine.sslConnector
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.request.receiveText
+import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.respondText
 import io.ktor.server.response.respondTextWriter
 import io.ktor.server.routing.get
@@ -34,8 +34,10 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationCall
 import io.ktor.server.routing.RoutingCall
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.utils.io.readRemaining
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
+import kotlinx.io.readByteArray
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -172,6 +174,8 @@ class LanMtlsRequiredException : IllegalStateException(
     "LAN API binding is disabled until a verified mTLS transport is configured",
 )
 
+private class RequestBodyTooLargeException : IllegalStateException("request body too large")
+
 class AndroMlApiServer(
     private val config: ApiServerConfig,
     private val apiKeys: suspend () -> Collection<ApiKeyRecord>,
@@ -246,8 +250,22 @@ class AndroMlApiServer(
                     call.respondText("{\"error\":\"request body too large\"}", status = HttpStatusCode.PayloadTooLarge)
                     return@post
                 }
-                val request = runCatching { ChatCompletionRequest.parse(call.receiveText()) }.getOrElse {
-                    call.respondText("{\"error\":\"invalid request\"}", status = HttpStatusCode.BadRequest)
+                val request = runCatching {
+                    ChatCompletionRequest.parse(call.receiveBoundedText(config.maxRequestBodyBytes))
+                }.getOrElse { error ->
+                    val status = if (error is RequestBodyTooLargeException) {
+                        HttpStatusCode.PayloadTooLarge
+                    } else {
+                        HttpStatusCode.BadRequest
+                    }
+                    call.respondText(
+                        if (status == HttpStatusCode.PayloadTooLarge) {
+                            "{\"error\":\"request body too large\"}"
+                        } else {
+                            "{\"error\":\"invalid request\"}"
+                        },
+                        status = status,
+                    )
                     return@post
                 }
                 if (request.stream) {
@@ -327,6 +345,14 @@ class AndroMlApiServer(
         is RoutingCall -> unwrapEngineCall(call.pipelineCall.engineCall)
         else -> call
     }
+}
+
+private suspend fun ApplicationCall.receiveBoundedText(maxBytes: Int): String {
+    val bytes = receiveChannel()
+        .readRemaining(maxBytes.toLong() + 1L)
+        .readByteArray()
+    if (bytes.size > maxBytes) throw RequestBodyTooLargeException()
+    return bytes.toString(Charsets.UTF_8)
 }
 
 private fun JsonObject.string(name: String): String =
