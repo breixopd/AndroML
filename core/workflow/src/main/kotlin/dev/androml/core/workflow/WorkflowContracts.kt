@@ -77,6 +77,17 @@ data class ModelNode(
     }
 }
 
+data class AgentNode(
+    override val id: NodeId,
+    val agentKey: String,
+    override val inputType: WorkflowValueType = WorkflowValueType.Text,
+    override val outputType: WorkflowValueType = WorkflowValueType.Text,
+) : WorkflowNode {
+    init {
+        require(agentKey.isNotBlank() && agentKey.length <= 512) { "agent key is invalid" }
+    }
+}
+
 data class RagNode(
     override val id: NodeId,
     val collectionKey: String,
@@ -175,6 +186,7 @@ enum class WorkflowValidationCode {
     UnboundedCycle,
     UnknownTool,
     UnknownModel,
+    UnknownAgent,
 }
 
 data class WorkflowValidationIssue(
@@ -193,6 +205,7 @@ data class WorkflowValidationResult(
 class WorkflowValidator(
     private val availableTools: Map<ToolId, ToolDescriptor> = emptyMap(),
     private val availableModels: Set<String> = emptySet(),
+    private val availableAgents: Set<String> = emptySet(),
 ) {
     fun validate(definition: WorkflowDefinition): WorkflowValidationResult {
         val issues = mutableListOf<WorkflowValidationIssue>()
@@ -258,6 +271,9 @@ class WorkflowValidator(
             }
             if (node is ModelNode && node.modelKey !in availableModels) {
                 issues += WorkflowValidationIssue(WorkflowValidationCode.UnknownModel, node.id, "model is not available")
+            }
+            if (node is AgentNode && node.agentKey !in availableAgents) {
+                issues += WorkflowValidationIssue(WorkflowValidationCode.UnknownAgent, node.id, "agent is not installed")
             }
         }
 

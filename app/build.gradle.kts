@@ -95,6 +95,7 @@ dependencies {
     implementation(project(":core:database"))
     implementation(project(":core:rag"))
     implementation(project(":core:api"))
+    implementation(project(":core:agents"))
     implementation(project(":core:security"))
     implementation(project(":core:device"))
     implementation(project(":core:network"))

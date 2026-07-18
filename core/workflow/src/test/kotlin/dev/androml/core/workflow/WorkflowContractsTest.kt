@@ -69,6 +69,27 @@ class WorkflowContractsTest {
     }
 
     @Test
+    fun rejectsUnknownAgents() {
+        val input = InputNode(NodeId.parse("input"), WorkflowValueType.Text)
+        val agent = AgentNode(NodeId.parse("agent"), agentKey = "researcher")
+        val output = OutputNode(NodeId.parse("output"))
+        val definition = WorkflowDefinition(
+            id = WorkflowId.parse("agent-invalid"),
+            version = 1,
+            entry = input.id,
+            nodes = listOf(input, agent, output),
+            edges = listOf(
+                WorkflowEdge(input.id, agent.id),
+                WorkflowEdge(agent.id, output.id),
+            ),
+        )
+
+        val result = WorkflowValidator().validate(definition)
+
+        assertTrue(result.issues.any { it.code == WorkflowValidationCode.UnknownAgent })
+    }
+
+    @Test
     fun boundedLoopMayContainAClosedCycleButPlainCycleIsRejected() {
         val input = InputNode(NodeId.parse("input"), WorkflowValueType.Any)
         val loop = LoopNode(NodeId.parse("loop"), maxIterations = 3)

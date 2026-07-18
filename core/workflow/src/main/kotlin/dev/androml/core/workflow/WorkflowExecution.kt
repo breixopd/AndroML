@@ -214,6 +214,7 @@ sealed interface WorkflowApprovalDecision {
 }
 
 typealias WorkflowModelRunner = suspend (ModelNode, WorkflowValue) -> WorkflowValue.Text
+typealias WorkflowAgentRunner = suspend (AgentNode, WorkflowValue) -> WorkflowValue.Text
 typealias WorkflowRagRunner = suspend (RagNode, WorkflowValue) -> WorkflowValue.Documents
 typealias WorkflowToolRunner = suspend (ToolNode, WorkflowValue) -> WorkflowValue.JsonValue
 typealias WorkflowApprovalRunner = suspend (ApprovalNode, WorkflowValue) -> WorkflowApprovalDecision
@@ -221,6 +222,9 @@ typealias WorkflowApprovalRunner = suspend (ApprovalNode, WorkflowValue) -> Work
 data class WorkflowNodeRunners(
     val model: WorkflowModelRunner = { node, _ ->
         throw WorkflowNodeExecutionException("model runner is not configured for ${node.modelKey}")
+    },
+    val agent: WorkflowAgentRunner = { node, _ ->
+        throw WorkflowNodeExecutionException("agent runner is not configured for ${node.agentKey}")
     },
     val rag: WorkflowRagRunner = { node, _ ->
         throw WorkflowNodeExecutionException("RAG runner is not configured for ${node.collectionKey}")
@@ -255,6 +259,7 @@ class WorkflowExecutor(
     private val checkpointStore: WorkflowCheckpointStore,
     private val availableTools: Map<ToolId, ToolDescriptor> = emptyMap(),
     private val availableModels: Set<String> = emptySet(),
+    private val availableAgents: Set<String> = emptySet(),
     private val runners: WorkflowNodeRunners = WorkflowNodeRunners(),
     private val nowEpochMillis: () -> Long = { System.currentTimeMillis() },
 ) {
@@ -263,7 +268,7 @@ class WorkflowExecutor(
         definition: WorkflowDefinition,
         input: WorkflowValue,
     ): WorkflowExecutionResult {
-        val validation = WorkflowValidator(availableTools, availableModels).validate(definition)
+        val validation = WorkflowValidator(availableTools, availableModels, availableAgents).validate(definition)
         if (!validation.isValid) {
             return WorkflowExecutionResult(
                 runId = runId,
@@ -510,6 +515,7 @@ class WorkflowExecutor(
     private suspend fun runNode(node: WorkflowNode, input: WorkflowValue): WorkflowValue = when (node) {
         is InputNode -> input
         is ModelNode -> runners.model(node, input)
+        is AgentNode -> runners.agent(node, input)
         is RagNode -> runners.rag(node, input)
         is ToolNode -> runners.tool(node, input)
         is BranchNode -> input

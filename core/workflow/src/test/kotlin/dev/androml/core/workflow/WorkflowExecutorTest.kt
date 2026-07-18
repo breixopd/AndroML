@@ -66,6 +66,41 @@ class WorkflowExecutorTest {
     }
 
     @Test
+    fun executesAgentNodeThroughTypedWorkflowRunner() = runBlocking {
+        val input = InputNode(NodeId.parse("input"), WorkflowValueType.Text)
+        val agent = AgentNode(NodeId.parse("agent"), agentKey = "researcher")
+        val output = OutputNode(NodeId.parse("output"))
+        val definition = WorkflowDefinition(
+            id = WorkflowId.parse("agent-workflow"),
+            version = 1,
+            entry = input.id,
+            nodes = listOf(input, agent, output),
+            edges = listOf(
+                WorkflowEdge(input.id, agent.id),
+                WorkflowEdge(agent.id, output.id),
+            ),
+        )
+
+        val result = WorkflowExecutor(
+            eventStore = InMemoryDurableWorkflowEventStore(),
+            checkpointStore = InMemoryWorkflowCheckpointStore(),
+            availableAgents = setOf("researcher"),
+            runners = WorkflowNodeRunners(
+                agent = { _, value ->
+                    WorkflowValue.Text("agent:${(value as WorkflowValue.Text).value}")
+                },
+            ),
+        ).execute(
+            runId = RunId.parse("run-agent"),
+            definition = definition,
+            input = WorkflowValue.Text("question"),
+        )
+
+        assertEquals(WorkflowRunStatus.Completed, result.status)
+        assertEquals(WorkflowValue.Text("agent:question"), result.output)
+    }
+
+    @Test
     fun waitsForApprovalThenResumesWithoutRestartingInput() = runBlocking {
         val input = InputNode(NodeId.parse("input"), WorkflowValueType.Text)
         val approval = ApprovalNode(NodeId.parse("approval"), requiredScopes = setOf("tools.write"))

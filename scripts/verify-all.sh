@@ -20,6 +20,7 @@ gradle_args=(
     :core:network:testDebugUnitTest
     :core:rag:testDebugUnitTest
     :core:tools:testDebugUnitTest
+    :core:agents:testDebugUnitTest
     :core:workflow:testDebugUnitTest
     :core:api:testDebugUnitTest
     :api:server:testDebugUnitTest
@@ -36,6 +37,7 @@ gradle_args=(
     :core:network:lintDebug
     :core:rag:lintDebug
     :core:tools:lintDebug
+    :core:agents:lintDebug
     :core:workflow:lintDebug
     :core:api:lintDebug
     :api:server:lintDebug
