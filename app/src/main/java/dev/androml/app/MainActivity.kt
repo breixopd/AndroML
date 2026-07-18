@@ -56,15 +56,24 @@ import dev.androml.core.database.ModelFileEntity
 import dev.androml.core.database.ModelRecordEntity
 import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.model.DeviceProfile
+import dev.androml.core.model.ModelRequirements
+import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.ReleasePolicy
 import dev.androml.core.network.HuggingFaceEndpoints
 import dev.androml.core.network.HuggingFaceModelClient
 import dev.androml.core.security.SecretStore
+import dev.androml.runtime.api.InferenceEvent
+import dev.androml.runtime.api.InferenceRequest
+import dev.androml.runtime.api.InferenceRequestId
+import dev.androml.runtime.api.RuntimeConfiguration
+import dev.androml.runtime.service.InferenceServiceClient
+import dev.androml.runtime.service.OpenedInferenceSession
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -88,7 +97,7 @@ private fun AndroMLTheme(content: @Composable () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AndroMLApp() {
-    val destinations = listOf("Home", "Discover", "Library", "More")
+    val destinations = listOf("Home", "Playground", "Discover", "Library", "More")
     var selectedDestination by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val application = context.applicationContext as AndroMLApplication
@@ -96,6 +105,7 @@ private fun AndroMLApp() {
         AndroidDeviceProfileCollector(context.applicationContext).collect()
     }
     val huggingFaceClient = application.huggingFaceClient
+    val inferenceServiceClient = application.inferenceServiceClient
     val workManager = WorkManager.getInstance(context)
     val catalogRepository = application.catalogRepository
     val catalogModels by catalogRepository.observeModels().collectAsState(initial = emptyList())
@@ -136,6 +146,12 @@ private fun AndroMLApp() {
                 modelCount = catalogModels.size,
             )
         } else if (selectedDestination == 1) {
+            PlaygroundScreen(
+                modifier = Modifier.padding(paddingValues),
+                serviceClient = inferenceServiceClient,
+                deviceProfile = deviceProfile,
+            )
+        } else if (selectedDestination == 2) {
             DiscoverScreen(
                 modifier = Modifier.padding(paddingValues),
                 modelClient = huggingFaceClient,
@@ -143,7 +159,7 @@ private fun AndroMLApp() {
                 catalogRepository = catalogRepository,
                 secretStore = application.secretStore,
             )
-        } else if (selectedDestination == 2) {
+        } else if (selectedDestination == 3) {
             LibraryScreen(
                 modifier = Modifier.padding(paddingValues),
                 models = catalogModels,
@@ -154,6 +170,141 @@ private fun AndroMLApp() {
                 name = destinations[selectedDestination],
                 modifier = Modifier.padding(paddingValues),
             )
+        }
+    }
+}
+
+@Composable
+private fun PlaygroundScreen(
+    modifier: Modifier = Modifier,
+    serviceClient: InferenceServiceClient,
+    deviceProfile: DeviceProfile,
+) {
+    var prompt by remember { mutableStateOf("Say hello from the isolated runtime.") }
+    var output by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("Runtime service not checked") }
+    var isRunning by remember { mutableStateOf(false) }
+    var runJob by remember { mutableStateOf<Job?>(null) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(serviceClient) {
+        status = try {
+            if (serviceClient.health()) "Isolated runtime ready · fake adapter" else "Runtime service is not ready"
+        } catch (_: Throwable) {
+            "Runtime service is unavailable"
+        }
+    }
+
+    fun stop() {
+        runJob?.cancel()
+        isRunning = false
+        status = "Stopping runtime request…"
+    }
+
+    fun runPrompt() {
+        if (isRunning) {
+            stop()
+            return
+        }
+        output = ""
+        isRunning = true
+        status = "Opening an isolated session…"
+        runJob = scope.launch {
+            var session: OpenedInferenceSession? = null
+            try {
+                session = serviceClient.openSession(
+                    model = ModelRequirements(
+                        workload = ModelWorkload.TextGeneration,
+                        weightBytes = 1L,
+                        contextTokens = 2048,
+                    ),
+                    configuration = RuntimeConfiguration(
+                        cpuThreads = deviceProfile.cpuCoreCount.coerceIn(1, 8),
+                        contextTokens = 2048,
+                        useAcceleration = false,
+                    ),
+                )
+                status = "Streaming from ${session.runtimeId.value} in :inference"
+                val request = InferenceRequest(
+                    id = InferenceRequestId.parse("ui-${System.nanoTime()}"),
+                    prompt = prompt,
+                    maxNewTokens = 256,
+                    temperature = 0.7,
+                )
+                serviceClient.stream(session, request).collect { event ->
+                    when (event) {
+                        is InferenceEvent.Started -> status = "Streaming from ${event.runtimeId.value} in :inference"
+                        is InferenceEvent.Token -> output += event.text
+                        is InferenceEvent.Completed -> status =
+                            "Complete · ${event.generatedTokens} tokens · ${event.durationMs} ms"
+
+                        is InferenceEvent.Failed -> status = "Runtime error: ${event.safeMessage}"
+                        is InferenceEvent.Cancelled -> status = "Request canceled"
+                    }
+                }
+            } catch (error: CancellationException) {
+                status = "Request canceled"
+            } catch (_: Throwable) {
+                status = "The runtime request failed without exposing internal details"
+            } finally {
+                session?.let(serviceClient::closeSession)
+                isRunning = false
+            }
+        }
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text("Playground", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Exercise the streaming contract and process isolation before native runtime packs are installed.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Runtime boundary", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("$status\nNetwork access is absent from the runtime-service module.")
+                    Spacer(Modifier.height(8.dp))
+                    AssistChip(onClick = {}, label = { Text("Fake adapter · test only") })
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Text generation smoke test", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = prompt,
+                        onValueChange = { prompt = it.take(InferenceRequest.MAX_PROMPT_CHARS) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Prompt") },
+                        minLines = 3,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = ::runPrompt, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (isRunning) "Stop" else "Run in isolated process")
+                    }
+                }
+            }
+        }
+        if (output.isNotEmpty()) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Output", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(6.dp))
+                        SelectionContainer { Text(output) }
+                    }
+                }
+            }
         }
     }
 }
