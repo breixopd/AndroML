@@ -72,7 +72,7 @@ jobs:
           ANDROML_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROML_RELEASE_STORE_PASSWORD }}
           ANDROML_RELEASE_KEY_ALIAS: ${{ secrets.ANDROML_RELEASE_KEY_ALIAS }}
           ANDROML_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROML_RELEASE_KEY_PASSWORD }}
-        run: ./gradlew :app:assembleOssRelease --no-daemon --console=plain
+        run: ./scripts/build-test-release.sh
 
       - name: Package and verify test artifact
         run: |
