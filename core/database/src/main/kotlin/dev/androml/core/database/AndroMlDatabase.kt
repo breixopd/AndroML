@@ -17,8 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RagChunkSearchEntity::class,
         ApiKeyEntity::class,
         WorkflowEventEntity::class,
+        WorkflowCheckpointEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
@@ -29,6 +30,8 @@ abstract class AndroMlDatabase : RoomDatabase() {
     abstract fun apiKeyDao(): ApiKeyDao
 
     abstract fun workflowEventDao(): WorkflowEventDao
+
+    abstract fun workflowCheckpointDao(): WorkflowCheckpointDao
 
     companion object {
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
@@ -138,10 +141,28 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+                        runId TEXT NOT NULL,
+                        nodeId TEXT NOT NULL,
+                        attempt INTEGER NOT NULL,
+                        outputHash TEXT NOT NULL,
+                        valuePayload TEXT NOT NULL,
+                        updatedAtEpochMillis INTEGER NOT NULL,
+                        PRIMARY KEY(runId, nodeId, attempt)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
             "androml.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
     }
 }

@@ -241,8 +241,12 @@ class WorkflowValidator(
                 is BranchNode -> if (count < 2) {
                     issues += WorkflowValidationIssue(WorkflowValidationCode.InvalidBranch, node.id, "branch requires at least two outgoing edges")
                 }
-                is LoopNode -> if (count < 1) {
-                    issues += WorkflowValidationIssue(WorkflowValidationCode.InvalidLoop, node.id, "loop requires an outgoing edge")
+                is LoopNode -> if (count < 2) {
+                    issues += WorkflowValidationIssue(
+                        WorkflowValidationCode.InvalidLoop,
+                        node.id,
+                        "loop requires body and exit edges",
+                    )
                 }
                 is OutputNode -> Unit
                 else -> if (count == 0) {

@@ -17,6 +17,7 @@ android {
 
 dependencies {
     implementation(project(":core:tools"))
+    implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.junit)
 }
