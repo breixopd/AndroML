@@ -19,6 +19,7 @@ android {
 dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:rag"))
+    implementation(project(":core:api"))
     api(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)

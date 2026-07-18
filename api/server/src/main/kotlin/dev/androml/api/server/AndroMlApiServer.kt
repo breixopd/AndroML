@@ -2,6 +2,7 @@ package dev.androml.api.server
 
 import dev.androml.core.api.ApiAuthResult
 import dev.androml.core.api.ApiKeyAuthenticator
+import dev.androml.core.api.ApiKeyId
 import dev.androml.core.api.ApiKeyRecord
 import dev.androml.core.api.ApiRequestClass
 import dev.androml.core.api.ApiScope
@@ -163,10 +164,11 @@ class LanMtlsRequiredException : IllegalStateException(
 
 class AndroMlApiServer(
     private val config: ApiServerConfig,
-    private val apiKeys: () -> Collection<ApiKeyRecord>,
+    private val apiKeys: suspend () -> Collection<ApiKeyRecord>,
     private val models: () -> List<String>,
     private val inference: ApiInferenceGateway,
     private val securityPolicy: ApiSecurityPolicy = ApiSecurityPolicy(),
+    private val onKeyUsed: suspend (ApiKeyId) -> Unit = {},
 ) {
     private val authenticator = ApiKeyAuthenticator()
     private var engine: EmbeddedServer<*, *>? = null
@@ -261,6 +263,7 @@ class AndroMlApiServer(
             call.respondText("{\"error\":\"${decision.reason}\"}", status = HttpStatusCode.Unauthorized)
             return false
         }
+        auth?.let { onKeyUsed(it.record.id) }
         return true
     }
 }

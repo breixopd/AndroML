@@ -15,14 +15,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RagDocumentEntity::class,
         RagChunkEntity::class,
         RagChunkSearchEntity::class,
+        ApiKeyEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
     abstract fun modelCatalogDao(): ModelCatalogDao
 
     abstract fun ragDao(): RagDao
+
+    abstract fun apiKeyDao(): ApiKeyDao
 
     companion object {
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
@@ -91,10 +94,29 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS api_keys (
+                        id TEXT NOT NULL PRIMARY KEY,
+                        displayName TEXT NOT NULL,
+                        tokenHash TEXT NOT NULL,
+                        scopes TEXT NOT NULL,
+                        createdAtEpochMillis INTEGER NOT NULL,
+                        expiresAtEpochMillis INTEGER,
+                        revokedAtEpochMillis INTEGER,
+                        lastUsedAtEpochMillis INTEGER
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
             "androml.db",
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     }
 }
