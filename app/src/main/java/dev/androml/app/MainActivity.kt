@@ -46,7 +46,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import dev.androml.core.files.FileArtifactStore
+import dev.androml.core.database.ModelCatalogRepository
+import dev.androml.core.database.ModelFileEntity
+import dev.androml.core.database.ModelRecordEntity
 import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ReleasePolicy
@@ -54,7 +56,6 @@ import dev.androml.core.network.DownloadProgress
 import dev.androml.core.network.HuggingFaceArtifactDownloader
 import dev.androml.core.network.HuggingFaceEndpoints
 import dev.androml.core.network.HuggingFaceModelClient
-import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -62,7 +63,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,19 +87,15 @@ private fun AndroMLApp() {
     val destinations = listOf("Home", "Discover", "Library", "More")
     var selectedDestination by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
+    val application = context.applicationContext as AndroMLApplication
     val deviceProfile = remember(context) {
         AndroidDeviceProfileCollector(context.applicationContext).collect()
     }
-    val httpClient = remember { OkHttpClient() }
-    val huggingFaceClient = remember(httpClient) {
-        HuggingFaceModelClient(httpClient)
-    }
-    val artifactStore = remember(context) {
-        FileArtifactStore(File(context.filesDir, "model-artifacts"))
-    }
-    val artifactDownloader = remember(httpClient, artifactStore) {
-        HuggingFaceArtifactDownloader(httpClient, artifactStore)
-    }
+    val huggingFaceClient = application.huggingFaceClient
+    val artifactDownloader = application.artifactDownloader
+    val catalogRepository = application.catalogRepository
+    val catalogModels by catalogRepository.observeModels().collectAsState(initial = emptyList())
+    val catalogFiles by catalogRepository.observeAllFiles().collectAsState(initial = emptyList())
 
     Scaffold(
         topBar = {
@@ -133,12 +129,20 @@ private fun AndroMLApp() {
                 modifier = Modifier.padding(paddingValues),
                 releasePolicy = ReleasePolicy.testPeriod(),
                 deviceProfile = deviceProfile,
+                modelCount = catalogModels.size,
             )
         } else if (selectedDestination == 1) {
             DiscoverScreen(
                 modifier = Modifier.padding(paddingValues),
                 modelClient = huggingFaceClient,
                 artifactDownloader = artifactDownloader,
+                catalogRepository = catalogRepository,
+            )
+        } else if (selectedDestination == 2) {
+            LibraryScreen(
+                modifier = Modifier.padding(paddingValues),
+                models = catalogModels,
+                files = catalogFiles,
             )
         } else {
             PlaceholderDestination(
@@ -154,6 +158,7 @@ private fun HomeScreen(
     modifier: Modifier = Modifier,
     releasePolicy: ReleasePolicy,
     deviceProfile: DeviceProfile,
+    modelCount: Int,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -188,8 +193,8 @@ private fun HomeScreen(
         item {
             StatusCard(
                 title = "Models",
-                value = "No models installed",
-                detail = "Use Discover to pin a Hugging Face commit before creating a verified download job.",
+                value = if (modelCount == 0) "No models installed" else "$modelCount revisions in library",
+                detail = "Use Discover to pin a Hugging Face commit, inspect its files, and create verified downloads.",
             )
         }
         item {
@@ -217,6 +222,7 @@ private fun DiscoverScreen(
     modifier: Modifier = Modifier,
     modelClient: HuggingFaceModelClient,
     artifactDownloader: HuggingFaceArtifactDownloader,
+    catalogRepository: ModelCatalogRepository,
 ) {
     var importState by remember { mutableStateOf(HuggingFaceImportState()) }
     var accessToken by remember { mutableStateOf("") }
@@ -261,7 +267,9 @@ private fun DiscoverScreen(
         metadataJob = scope.launch {
             try {
                 val metadata = withContext(Dispatchers.IO) {
-                    modelClient.fetchMetadata(reference, token)
+                    modelClient.fetchMetadata(reference, token).also { fetchedMetadata ->
+                        catalogRepository.saveMetadata(fetchedMetadata)
+                    }
                 }
                 if (requestId == metadataRequestId) {
                     metadataState = HuggingFaceMetadataUiState.Loaded(metadata)
@@ -295,6 +303,13 @@ private fun DiscoverScreen(
                         jobKey = sha256,
                         accessToken = token,
                         onProgress = { progress -> progressFlow.value = progress },
+                    )
+                }
+                withContext(Dispatchers.IO) {
+                    catalogRepository.markArtifactVerified(
+                        reference = reference,
+                        path = descriptor.path,
+                        artifactSha256 = artifact.sha256,
                     )
                 }
                 if (requestId == downloadRequestId) {
@@ -560,6 +575,84 @@ private fun DiscoverScreen(
     }
 }
 
+@Composable
+private fun LibraryScreen(
+    modifier: Modifier = Modifier,
+    models: List<ModelRecordEntity>,
+    files: List<ModelFileEntity>,
+) {
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text("Library", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Pinned revisions and verified artifact status persist locally on this phone.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        if (models.isEmpty()) {
+            item {
+                StatusCard(
+                    title = "No pinned revisions",
+                    value = "Library is empty",
+                    detail = "Inspect a Hugging Face revision from Discover to add its provenance and file list.",
+                )
+            }
+        } else {
+            items(
+                items = models,
+                key = { model -> "${model.modelId}@${model.revision}" },
+            ) { model ->
+                val modelFiles = files.filter {
+                    it.modelId == model.modelId && it.revision == model.revision
+                }
+                val verifiedFiles = modelFiles.count { it.artifactSha256 != null }
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(model.modelId, style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(4.dp))
+                        SelectionContainer {
+                            Text("Commit ${model.revision}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            buildString {
+                                append("${verifiedFiles}/${modelFiles.size} files verified")
+                                append(if (model.isPrivate) " · private" else " · public")
+                                if (model.isGated) append(" · gated")
+                                model.license?.let { append(" · license: $it") }
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        modelFiles.take(MAX_LIBRARY_FILE_PREVIEW).forEach { file ->
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                Text(file.path, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    if (file.artifactSha256 == null) "not downloaded" else "verified",
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                        }
+                        if (modelFiles.size > MAX_LIBRARY_FILE_PREVIEW) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "${modelFiles.size - MAX_LIBRARY_FILE_PREVIEW} more files available in Discover.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private const val MAX_LIBRARY_FILE_PREVIEW = 8
+
 private fun List<dev.androml.core.model.HuggingFaceFileDescriptor>.totalBytes(): Long = fold(0L) { total, file ->
     if (Long.MAX_VALUE - total < file.sizeBytes) Long.MAX_VALUE else total + file.sizeBytes
 }
@@ -622,6 +715,7 @@ private fun HomeScreenPreview() {
                 thermalStatus = dev.androml.core.model.ThermalStatus.Nominal,
                 hasVulkan = true,
             ),
+            modelCount = 0,
         )
     }
 }

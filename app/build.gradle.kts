@@ -91,6 +91,7 @@ android {
 dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:files"))
+    implementation(project(":core:database"))
     implementation(project(":core:device"))
     implementation(project(":core:network"))
     implementation(libs.androidx.core.ktx)

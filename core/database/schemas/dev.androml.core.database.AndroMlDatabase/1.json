@@ -1,0 +1,141 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "50c862d97de7aefa537db5478dbdc871",
+    "entities": [
+      {
+        "tableName": "model_records",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`modelId` TEXT NOT NULL, `revision` TEXT NOT NULL, `isPrivate` INTEGER NOT NULL, `isGated` INTEGER NOT NULL, `license` TEXT, `observedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`modelId`, `revision`))",
+        "fields": [
+          {
+            "fieldPath": "modelId",
+            "columnName": "modelId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPrivate",
+            "columnName": "isPrivate",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isGated",
+            "columnName": "isGated",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "license",
+            "columnName": "license",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "observedAtEpochMillis",
+            "columnName": "observedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "modelId",
+            "revision"
+          ]
+        }
+      },
+      {
+        "tableName": "model_files",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`modelId` TEXT NOT NULL, `revision` TEXT NOT NULL, `path` TEXT NOT NULL, `sizeBytes` INTEGER NOT NULL, `sha256` TEXT, `artifactSha256` TEXT, `downloadedAtEpochMillis` INTEGER, PRIMARY KEY(`modelId`, `revision`, `path`), FOREIGN KEY(`modelId`, `revision`) REFERENCES `model_records`(`modelId`, `revision`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "modelId",
+            "columnName": "modelId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "path",
+            "columnName": "path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "artifactSha256",
+            "columnName": "artifactSha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "downloadedAtEpochMillis",
+            "columnName": "downloadedAtEpochMillis",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "modelId",
+            "revision",
+            "path"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_model_files_modelId_revision",
+            "unique": false,
+            "columnNames": [
+              "modelId",
+              "revision"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_model_files_modelId_revision` ON `${TABLE_NAME}` (`modelId`, `revision`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "model_records",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "modelId",
+              "revision"
+            ],
+            "referencedColumns": [
+              "modelId",
+              "revision"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '50c862d97de7aefa537db5478dbdc871')"
+    ]
+  }
+}

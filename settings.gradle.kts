@@ -19,6 +19,7 @@ rootProject.name = "AndroML"
 include(":app")
 include(":core:model")
 include(":core:files")
+include(":core:database")
 include(":core:device")
 include(":core:network")
 include(":runtime:api")
