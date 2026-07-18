@@ -16,13 +16,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -30,6 +33,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -40,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ReleasePolicy
+import dev.androml.core.network.HuggingFaceEndpoints
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -101,6 +106,8 @@ private fun AndroMLApp() {
                 releasePolicy = ReleasePolicy.testPeriod(),
                 deviceProfile = deviceProfile,
             )
+        } else if (selectedDestination == 1) {
+            DiscoverScreen(modifier = Modifier.padding(paddingValues))
         } else {
             PlaceholderDestination(
                 name = destinations[selectedDestination],
@@ -150,14 +157,14 @@ private fun HomeScreen(
             StatusCard(
                 title = "Models",
                 value = "No models installed",
-                detail = "Hugging Face discovery and verified downloads are next.",
+                detail = "Use Discover to pin a Hugging Face commit before creating a verified download job.",
             )
         }
         item {
             StatusCard(
                 title = "Runtime packs",
-                value = "Foundation build",
-                detail = "Runtime adapters will be added behind the isolated inference boundary.",
+                value = "Optimizer contracts ready",
+                detail = "No native runtime pack is installed yet; impossible device/model combinations are rejected first.",
             )
         }
         item {
@@ -168,6 +175,111 @@ private fun HomeScreen(
             Row(modifier = Modifier.fillMaxWidth()) {
                 Text(activity, modifier = Modifier.weight(1f))
                 Text("now", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoverScreen(modifier: Modifier = Modifier) {
+    var importState by remember { mutableStateOf(HuggingFaceImportState()) }
+    val endpoint = importState.reference?.let { reference ->
+        remember(reference) { HuggingFaceEndpoints().modelInfo(reference).toString() }
+    }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Text("Hugging Face direct import", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Resolve a repository to an immutable commit before any model bytes are downloaded.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Pinned source", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = importState.modelId,
+                        onValueChange = {
+                            importState = importState.copy(
+                                modelId = it,
+                                reference = null,
+                                errorMessage = null,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Model ID") },
+                        placeholder = { Text("organization/model-name") },
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = importState.revision,
+                        onValueChange = {
+                            importState = importState.copy(
+                                revision = it,
+                                reference = null,
+                                errorMessage = null,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Commit SHA") },
+                        placeholder = { Text("40 lowercase hexadecimal characters") },
+                        singleLine = true,
+                        isError = importState.errorMessage != null,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { importState = importState.validate() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Validate pinned source")
+                    }
+                    importState.errorMessage?.let { errorMessage ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            errorMessage,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Access and safety", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Gated model approval happens on Hugging Face. The app will use a least-privilege read or fine-grained token and never place credentials in a URL.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+        endpoint?.let { pinnedEndpoint ->
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Pinned metadata endpoint", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(6.dp))
+                        SelectionContainer {
+                            Text(pinnedEndpoint, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Ready for metadata inspection and a resumable, hash-verified download job.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
             }
         }
     }
