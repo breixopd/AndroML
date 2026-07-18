@@ -1,0 +1,75 @@
+name: GitHub Release (private phone test)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  STORE_SUBMISSIONS_ENABLED: 'false'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+
+      - name: Block store publication during phone test
+        run: test "$STORE_SUBMISSIONS_ENABLED" = 'false'
+
+      - name: Require test-release signing inputs
+        env:
+          ANDROML_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROML_RELEASE_KEYSTORE_B64 }}
+          ANDROML_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROML_RELEASE_STORE_PASSWORD }}
+          ANDROML_RELEASE_KEY_ALIAS: ${{ secrets.ANDROML_RELEASE_KEY_ALIAS }}
+          ANDROML_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROML_RELEASE_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROML_RELEASE_KEYSTORE_B64"
+          test -n "$ANDROML_RELEASE_STORE_PASSWORD"
+          test -n "$ANDROML_RELEASE_KEY_ALIAS"
+          test -n "$ANDROML_RELEASE_KEY_PASSWORD"
+          printf '%s' "$ANDROML_RELEASE_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/androml-test-release.jks"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build OSS release APK
+        env:
+          ANDROML_RELEASE_KEYSTORE: ${{ runner.temp }}/androml-test-release.jks
+          ANDROML_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROML_RELEASE_STORE_PASSWORD }}
+          ANDROML_RELEASE_KEY_ALIAS: ${{ secrets.ANDROML_RELEASE_KEY_ALIAS }}
+          ANDROML_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROML_RELEASE_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleOssRelease --no-daemon --console=plain
+
+      - name: Package and verify test artifact
+        run: ./scripts/package-test-release.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Assert release contains only GitHub test artifacts
+        run: |
+          test "$STORE_SUBMISSIONS_ENABLED" = 'false'
+          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -eq 3
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/test-release/* \
+            --title "AndroML ${GITHUB_REF_NAME#v} (private phone test)" \
+            --notes-file CHANGELOG.md
+
