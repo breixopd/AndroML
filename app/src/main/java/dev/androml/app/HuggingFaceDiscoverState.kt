@@ -23,6 +23,8 @@ sealed interface HuggingFaceDownloadUiState {
 
     data class Running(
         val path: String,
+        val bytesWritten: Long = 0L,
+        val totalBytes: Long = 0L,
     ) : HuggingFaceDownloadUiState
 
     data class Complete(
@@ -75,4 +77,23 @@ fun huggingFaceUserMessage(error: Throwable): String = when (error) {
 
     is IllegalArgumentException -> "The pinned source is invalid. Check the model ID and commit SHA."
     else -> "The operation failed without exposing the underlying error details."
+}
+
+fun huggingFaceWorkerUserMessage(errorCode: String?): String = when (errorCode) {
+    "invalid-input" -> "The saved download request is invalid and was not sent."
+    "application-unavailable" -> "AndroML could not start its download service."
+    "secret-integrity", "secret-unavailable" ->
+        "The saved Hugging Face token could not be read; the download was not authenticated."
+
+    "Unauthorized" ->
+        "Hugging Face rejected the request. Save a read token after approving access to the model."
+
+    "Forbidden" ->
+        "Hugging Face denied access. Approve the gated model in a browser, then save a read token."
+
+    "NotFound" -> "That pinned model or revision was not found on Hugging Face."
+    "ResponseTooLarge" -> "The file response exceeded AndroML's safety limit."
+    "InvalidMetadata" -> "The file response failed integrity or range validation."
+    "unexpected" -> "The background download failed without exposing internal error details."
+    else -> "The background download failed. Check the connection and try again."
 }

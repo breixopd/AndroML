@@ -31,10 +31,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,21 +48,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.work.ExistingWorkPolicy
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import dev.androml.core.database.ModelCatalogRepository
 import dev.androml.core.database.ModelFileEntity
 import dev.androml.core.database.ModelRecordEntity
 import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ReleasePolicy
-import dev.androml.core.network.DownloadProgress
-import dev.androml.core.network.HuggingFaceArtifactDownloader
 import dev.androml.core.network.HuggingFaceEndpoints
 import dev.androml.core.network.HuggingFaceModelClient
+import dev.androml.core.security.SecretStore
 import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -92,7 +96,7 @@ private fun AndroMLApp() {
         AndroidDeviceProfileCollector(context.applicationContext).collect()
     }
     val huggingFaceClient = application.huggingFaceClient
-    val artifactDownloader = application.artifactDownloader
+    val workManager = WorkManager.getInstance(context)
     val catalogRepository = application.catalogRepository
     val catalogModels by catalogRepository.observeModels().collectAsState(initial = emptyList())
     val catalogFiles by catalogRepository.observeAllFiles().collectAsState(initial = emptyList())
@@ -135,8 +139,9 @@ private fun AndroMLApp() {
             DiscoverScreen(
                 modifier = Modifier.padding(paddingValues),
                 modelClient = huggingFaceClient,
-                artifactDownloader = artifactDownloader,
+                workManager = workManager,
                 catalogRepository = catalogRepository,
+                secretStore = application.secretStore,
             )
         } else if (selectedDestination == 2) {
             LibraryScreen(
@@ -221,11 +226,15 @@ private fun HomeScreen(
 private fun DiscoverScreen(
     modifier: Modifier = Modifier,
     modelClient: HuggingFaceModelClient,
-    artifactDownloader: HuggingFaceArtifactDownloader,
+    workManager: WorkManager,
     catalogRepository: ModelCatalogRepository,
+    secretStore: SecretStore,
 ) {
     var importState by remember { mutableStateOf(HuggingFaceImportState()) }
     var accessToken by remember { mutableStateOf("") }
+    var tokenStored by remember { mutableStateOf(false) }
+    var tokenDirty by remember { mutableStateOf(false) }
+    var tokenStorageMessage by remember { mutableStateOf<String?>(null) }
     var metadataState by remember {
         mutableStateOf<HuggingFaceMetadataUiState>(HuggingFaceMetadataUiState.Idle)
     }
@@ -233,32 +242,107 @@ private fun DiscoverScreen(
         mutableStateOf<HuggingFaceDownloadUiState>(HuggingFaceDownloadUiState.Idle)
     }
     var metadataJob by remember { mutableStateOf<Job?>(null) }
-    var downloadJob by remember { mutableStateOf<Job?>(null) }
     var metadataRequestId by remember { mutableIntStateOf(0) }
-    var downloadRequestId by remember { mutableIntStateOf(0) }
+    var activeWorkId by remember { mutableStateOf<UUID?>(null) }
     val scope = rememberCoroutineScope()
-    val progressFlow = remember { MutableStateFlow<DownloadProgress?>(null) }
-    val downloadProgress by progressFlow.collectAsState()
+    LaunchedEffect(secretStore) {
+        try {
+            val savedToken = withContext(Dispatchers.IO) {
+                secretStore.read(HuggingFaceDownloadWork.HF_READ_TOKEN_SECRET_NAME)
+            }
+            if (savedToken != null && accessToken.isBlank()) {
+                accessToken = savedToken
+                tokenStored = true
+                tokenDirty = false
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            tokenStorageMessage = "The saved Hugging Face token could not be read; it was not sent."
+        }
+    }
     val endpoint = importState.reference?.let { reference ->
         HuggingFaceEndpoints().modelInfo(reference).toString()
     }
 
+    LaunchedEffect(activeWorkId) {
+        val workId = activeWorkId ?: return@LaunchedEffect
+        workManager.getWorkInfoByIdFlow(workId).collect { info ->
+            if (info == null) return@collect
+            val current = downloadState as? HuggingFaceDownloadUiState.Running
+                ?: return@collect
+            when (info.state) {
+                WorkInfo.State.ENQUEUED,
+                WorkInfo.State.BLOCKED,
+                -> Unit
+
+                WorkInfo.State.RUNNING -> {
+                    downloadState = current.copy(
+                        bytesWritten = info.progress.getLong(
+                            HuggingFaceDownloadWork.PROGRESS_BYTES_KEY,
+                            current.bytesWritten,
+                        ),
+                        totalBytes = info.progress.getLong(
+                            HuggingFaceDownloadWork.PROGRESS_TOTAL_BYTES_KEY,
+                            current.totalBytes,
+                        ),
+                    )
+                }
+
+                WorkInfo.State.SUCCEEDED -> {
+                    downloadState = HuggingFaceDownloadUiState.Complete(
+                        path = current.path,
+                        sizeBytes = info.outputData.getLong(
+                            HuggingFaceDownloadWork.OUTPUT_SIZE_BYTES_KEY,
+                            current.totalBytes,
+                        ),
+                        sha256 = info.outputData.getString(
+                            HuggingFaceDownloadWork.OUTPUT_SHA256_KEY,
+                        ).orEmpty(),
+                    )
+                    activeWorkId = null
+                }
+
+                WorkInfo.State.FAILED -> {
+                    downloadState = HuggingFaceDownloadUiState.Failed(
+                        path = current.path,
+                        message = huggingFaceWorkerUserMessage(
+                            info.outputData.getString(HuggingFaceDownloadWork.ERROR_CODE_KEY),
+                        ),
+                    )
+                    activeWorkId = null
+                }
+
+                WorkInfo.State.CANCELLED -> {
+                    downloadState = HuggingFaceDownloadUiState.Failed(
+                        path = current.path,
+                        message = "The background download was canceled.",
+                    )
+                    activeWorkId = null
+                }
+            }
+        }
+    }
+
+    fun cancelActiveDownload() {
+        activeWorkId?.let { workManager.cancelWorkById(it) }
+        activeWorkId = null
+    }
+
     fun clearResolvedSource() {
         metadataRequestId += 1
-        downloadRequestId += 1
         metadataJob?.cancel()
-        downloadJob?.cancel()
+        cancelActiveDownload()
         metadataState = HuggingFaceMetadataUiState.Idle
         downloadState = HuggingFaceDownloadUiState.Idle
-        progressFlow.value = null
     }
 
     fun inspectPinnedSource() {
         val validatedState = importState.validate()
         importState = validatedState
+        cancelActiveDownload()
         metadataState = HuggingFaceMetadataUiState.Idle
         downloadState = HuggingFaceDownloadUiState.Idle
-        progressFlow.value = null
         val reference = validatedState.reference ?: return
         metadataJob?.cancel()
         val requestId = ++metadataRequestId
@@ -284,51 +368,70 @@ private fun DiscoverScreen(
         }
     }
 
+    fun saveAccessToken() {
+        val token = accessToken.trim()
+        if (token.isEmpty()) return
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    secretStore.write(HuggingFaceDownloadWork.HF_READ_TOKEN_SECRET_NAME, token)
+                }
+                tokenStored = true
+                tokenDirty = false
+                tokenStorageMessage = "Token saved in Android Keystore-backed storage."
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                tokenStorageMessage = "The token could not be saved securely. It remains memory-only."
+            }
+        }
+    }
+
+    fun removeSavedAccessToken() {
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    secretStore.delete(HuggingFaceDownloadWork.HF_READ_TOKEN_SECRET_NAME)
+                }
+                tokenStored = false
+                tokenDirty = false
+                accessToken = ""
+                tokenStorageMessage = "Saved token removed."
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                tokenStorageMessage = "The saved token could not be removed."
+            }
+        }
+    }
+
     fun downloadFile(
         reference: dev.androml.core.model.HuggingFaceModelReference,
         descriptor: dev.androml.core.model.HuggingFaceFileDescriptor,
     ) {
         val sha256 = descriptor.sha256 ?: return
-        downloadJob?.cancel()
-        val requestId = ++downloadRequestId
-        val token = accessToken.trim().takeIf { it.isNotEmpty() }
-        progressFlow.value = null
-        downloadState = HuggingFaceDownloadUiState.Running(descriptor.path)
-        downloadJob = scope.launch {
-            try {
-                val artifact = withContext(Dispatchers.IO) {
-                    artifactDownloader.download(
-                        reference = reference,
-                        descriptor = descriptor,
-                        jobKey = sha256,
-                        accessToken = token,
-                        onProgress = { progress -> progressFlow.value = progress },
-                    )
-                }
-                withContext(Dispatchers.IO) {
-                    catalogRepository.markArtifactVerified(
-                        reference = reference,
-                        path = descriptor.path,
-                        artifactSha256 = artifact.sha256,
-                    )
-                }
-                if (requestId == downloadRequestId) {
-                    downloadState = HuggingFaceDownloadUiState.Complete(
-                        path = descriptor.path,
-                        sizeBytes = artifact.sizeBytes,
-                        sha256 = artifact.sha256,
-                    )
-                }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                if (requestId == downloadRequestId) {
-                    downloadState = HuggingFaceDownloadUiState.Failed(
-                        path = descriptor.path,
-                        message = huggingFaceUserMessage(error),
-                    )
-                }
-            }
+        if (accessToken.isNotBlank() && (!tokenStored || tokenDirty)) {
+            tokenStorageMessage = "Save the current token securely before queueing a background download."
+            return
+        }
+        val request = HuggingFaceDownloadWork.createRequest(reference, descriptor)
+        val uniqueWorkName = "hf-download-$sha256"
+        try {
+            workManager.enqueueUniqueWork(
+                uniqueWorkName,
+                ExistingWorkPolicy.REPLACE,
+                request,
+            )
+            activeWorkId = request.id
+            downloadState = HuggingFaceDownloadUiState.Running(
+                path = descriptor.path,
+                totalBytes = descriptor.sizeBytes,
+            )
+        } catch (_: Exception) {
+            downloadState = HuggingFaceDownloadUiState.Failed(
+                path = descriptor.path,
+                message = "AndroML could not queue the background download.",
+            )
         }
     }
 
@@ -384,13 +487,44 @@ private fun DiscoverScreen(
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = accessToken,
-                        onValueChange = { accessToken = it },
+                        onValueChange = {
+                            accessToken = it
+                            tokenDirty = tokenStored
+                            tokenStorageMessage = null
+                        },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("HF read token (optional, memory-only)") },
-                        supportingText = { Text("Use only after browser approval for a gated model; never saved by this screen.") },
+                        label = { Text("HF read token (optional)") },
+                        supportingText = { Text("Use only after browser approval for a gated model; credentials never go in URLs.") },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
                     )
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        TextButton(
+                            onClick = ::saveAccessToken,
+                            enabled = accessToken.isNotBlank() && (!tokenStored || tokenDirty),
+                        ) {
+                            Text("Save securely")
+                        }
+                        if (tokenStored) {
+                            TextButton(onClick = ::removeSavedAccessToken) {
+                                Text("Remove saved token")
+                            }
+                        }
+                    }
+                    Text(
+                        if (tokenStored && !tokenDirty) {
+                            "A saved token is encrypted with Android Keystore and referenced only by name."
+                        } else if (tokenStored) {
+                            "This field has unsaved edits; choose Save securely to replace the encrypted token."
+                        } else {
+                            "The token is memory-only until you choose Save securely."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    tokenStorageMessage?.let { message ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(message, style = MaterialTheme.typography.bodySmall)
+                    }
                     Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = ::inspectPinnedSource,
@@ -423,7 +557,7 @@ private fun DiscoverScreen(
                     Text("Access and safety", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Gated model approval happens on Hugging Face. The app uses a least-privilege read token for this in-memory test flow and never places credentials in a URL.",
+                        "Gated model approval happens on Hugging Face. Metadata inspection may use an in-memory read token; background downloads use only the Keystore-backed token and never place credentials in a URL.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -522,18 +656,21 @@ private fun DiscoverScreen(
                             Text("Downloading ${state.path}", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(8.dp))
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            downloadProgress?.let { progress ->
+                            if (state.totalBytes > 0L) {
                                 Spacer(Modifier.height(6.dp))
                                 Text(
-                                    "${formatBytes(progress.bytesWritten)} / ${formatBytes(progress.totalBytes)}",
+                                    "${formatBytes(state.bytesWritten)} / ${formatBytes(state.totalBytes)}",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "The partial file is retained for a later range-resume if the connection stops.",
+                                "The partial file and WorkManager job survive navigation and can resume after a connection stop.",
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                            TextButton(onClick = ::cancelActiveDownload) {
+                                Text("Cancel download")
+                            }
                         }
                     }
                 }
