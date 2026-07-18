@@ -13,6 +13,27 @@ import java.security.spec.PKCS8EncodedKeySpec
 import java.time.Instant
 import java.util.Base64
 
+/** Non-secret certificate metadata safe to expose in UI and diagnostics. */
+data class TlsIdentitySummary(
+    val alias: String,
+    val fingerprint: dev.androml.core.api.CertificateFingerprint,
+    val notBeforeEpochMillis: Long,
+    val notAfterEpochMillis: Long,
+) {
+    init {
+        require(notAfterEpochMillis > notBeforeEpochMillis) {
+            "TLS certificate validity interval is invalid"
+        }
+    }
+}
+
+fun TlsIdentity.summary(): TlsIdentitySummary = TlsIdentitySummary(
+    alias = alias,
+    fingerprint = fingerprint,
+    notBeforeEpochMillis = certificate.notBefore.time,
+    notAfterEpochMillis = certificate.notAfter.time,
+)
+
 /** Compact, versioned encoding for a TLS private key and its certificate. */
 object TlsIdentityCodec {
     private const val FORMAT_VERSION: Int = 1

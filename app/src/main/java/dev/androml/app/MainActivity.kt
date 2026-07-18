@@ -181,6 +181,7 @@ private fun AndroMLApp() {
                 modifier = Modifier.padding(paddingValues),
                 controller = apiController,
                 keyRepository = apiKeyRepository,
+                tlsIdentityStore = application.apiTlsIdentityStore,
             )
         } else {
             PlaceholderDestination(

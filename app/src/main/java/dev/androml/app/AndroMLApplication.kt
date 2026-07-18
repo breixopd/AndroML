@@ -18,6 +18,7 @@ import dev.androml.core.network.HuggingFaceArtifactDownloader
 import dev.androml.core.network.HuggingFaceModelClient
 import dev.androml.core.security.AndroidKeystoreSecretStore
 import dev.androml.core.security.SecretStore
+import dev.androml.core.security.TlsIdentityStore
 import dev.androml.runtime.api.InferenceEvent
 import dev.androml.runtime.api.InferenceRequest
 import dev.androml.runtime.api.InferenceRequestId
@@ -66,6 +67,10 @@ class AndroMLApplication : Application() {
 
     val apiKeyRepository: ApiKeyRepository by lazy {
         ApiKeyRepository(catalogDatabase.apiKeyDao())
+    }
+
+    val apiTlsIdentityStore: TlsIdentityStore by lazy {
+        TlsIdentityStore(secretStore)
     }
 
     val inferenceServiceClient: InferenceServiceClient by lazy {

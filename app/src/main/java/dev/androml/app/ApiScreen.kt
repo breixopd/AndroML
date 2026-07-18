@@ -34,6 +34,10 @@ import androidx.compose.ui.unit.dp
 import dev.androml.core.api.ApiScope
 import dev.androml.core.api.ApiKeyRecord
 import dev.androml.core.database.ApiKeyRepository
+import dev.androml.core.security.TlsIdentityStore
+import dev.androml.core.security.TlsIdentitySummary
+import dev.androml.core.security.summary
+import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -44,6 +48,7 @@ fun ApiScreen(
     modifier: Modifier = Modifier,
     controller: LocalApiController,
     keyRepository: ApiKeyRepository,
+    tlsIdentityStore: TlsIdentityStore,
 ) {
     val apiState by controller.state.collectAsState()
     var keys by remember { mutableStateOf<List<ApiKeyRecord>>(emptyList()) }
@@ -55,6 +60,8 @@ fun ApiScreen(
     var generatedToken by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var tlsSummary by remember { mutableStateOf<TlsIdentitySummary?>(null) }
+    var tlsBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun refreshKeys() {
@@ -70,6 +77,21 @@ fun ApiScreen(
             throw error
         } catch (_: Throwable) {
             message = "API key storage could not be read"
+        }
+    }
+
+    LaunchedEffect(tlsIdentityStore) {
+        try {
+            tlsSummary = withContext(Dispatchers.IO) {
+                tlsIdentityStore.loadOrCreate(
+                    alias = API_TLS_ALIAS,
+                    subjectName = API_TLS_SUBJECT,
+                ).summary()
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            message = "mTLS identity could not be loaded"
         }
     }
 
@@ -132,6 +154,33 @@ fun ApiScreen(
         }
     }
 
+    fun rotateTlsIdentity() {
+        if (apiState is LocalApiState.Running) {
+            message = "Stop the API before rotating its mTLS identity"
+            return
+        }
+        tlsBusy = true
+        message = null
+        scope.launch {
+            try {
+                tlsSummary = withContext(Dispatchers.IO) {
+                    tlsIdentityStore.delete(API_TLS_ALIAS)
+                    tlsIdentityStore.loadOrCreate(
+                        alias = API_TLS_ALIAS,
+                        subjectName = API_TLS_SUBJECT,
+                    ).summary()
+                }
+                message = "mTLS identity rotated; existing clients must be re-paired"
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "mTLS identity could not be rotated"
+            } finally {
+                tlsBusy = false
+            }
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -177,6 +226,40 @@ fun ApiScreen(
                     ) {
                         if (busy) CircularProgressIndicator()
                         else Text(if (apiState is LocalApiState.Running) "Stop loopback API" else "Enable loopback API")
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("mTLS identity", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "This certificate is reserved for the future LAN transport. LAN binding stays disabled until the verified mTLS server path is enabled.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val summary = tlsSummary
+                    if (summary == null) {
+                        CircularProgressIndicator()
+                    } else {
+                        Text("Alias: ${summary.alias}", style = MaterialTheme.typography.bodySmall)
+                        Text("SHA-256 fingerprint", style = MaterialTheme.typography.labelMedium)
+                        SelectionContainer {
+                            Text(summary.fingerprint.value, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(
+                            "Valid until ${Instant.ofEpochMilli(summary.notAfterEpochMillis)}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        TextButton(
+                            onClick = ::rotateTlsIdentity,
+                            enabled = !tlsBusy && apiState !is LocalApiState.Running,
+                        ) {
+                            Text(if (tlsBusy) "Rotating…" else "Rotate identity")
+                        }
                     }
                 }
             }
@@ -283,6 +366,9 @@ fun ApiScreen(
         }
     }
 }
+
+private const val API_TLS_ALIAS = "api-server"
+private const val API_TLS_SUBJECT = "AndroML API"
 
 @Composable
 private fun ApiKeyCard(

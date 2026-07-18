@@ -4,6 +4,7 @@ import java.net.InetAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLServerSocket
+import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocket
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -39,6 +40,47 @@ class MtlsMaterialTest {
                 assertTrue(socket.session.peerCertificates.first().encoded.contentEquals(serverIdentity.certificate.encoded))
             }
             assertTrue(accepted.get(10, TimeUnit.SECONDS))
+        } finally {
+            server.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun serverRejectsUnpairedClientCertificateDuringMutualTlsHandshake() {
+        val serverIdentity = SelfSignedTlsIdentityFactory.generate("server-negative")
+        val pairedClientIdentity = SelfSignedTlsIdentityFactory.generate("paired-client")
+        val unpairedClientIdentity = SelfSignedTlsIdentityFactory.generate("unpaired-client")
+
+        val serverContext = MtlsContextFactory.serverContext(
+            identity = serverIdentity,
+            trustedClientCertificates = listOf(pairedClientIdentity.certificate),
+        )
+        val clientContext = MtlsContextFactory.clientContext(
+            identity = unpairedClientIdentity,
+            trustedServerCertificates = listOf(serverIdentity.certificate),
+        )
+        val server = serverContext.serverSocketFactory.createServerSocket(0) as SSLServerSocket
+        server.needClientAuth = true
+        val executor = Executors.newSingleThreadExecutor()
+        val rejected = executor.submit<Boolean> {
+            (server.accept() as SSLSocket).use { socket ->
+                try {
+                    socket.startHandshake()
+                    false
+                } catch (_: SSLException) {
+                    true
+                }
+            }
+        }
+        try {
+            (clientContext.socketFactory.createSocket(
+                InetAddress.getLoopbackAddress(),
+                server.localPort,
+            ) as SSLSocket).use { socket ->
+                socket.startHandshake()
+            }
+            assertTrue(rejected.get(10, TimeUnit.SECONDS))
         } finally {
             server.close()
             executor.shutdownNow()

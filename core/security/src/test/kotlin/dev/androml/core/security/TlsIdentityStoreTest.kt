@@ -35,6 +35,18 @@ class TlsIdentityStoreTest {
         assertNotEquals(first.fingerprint, rotated.fingerprint)
     }
 
+    @Test
+    fun summaryContainsCertificateMetadataWithoutPrivateKeyMaterial() {
+        val identity = SelfSignedTlsIdentityFactory.generate("summary-node")
+
+        val summary = identity.summary()
+
+        assertEquals(identity.alias, summary.alias)
+        assertEquals(identity.fingerprint, summary.fingerprint)
+        assertEquals(identity.certificate.notBefore.time, summary.notBeforeEpochMillis)
+        assertEquals(identity.certificate.notAfter.time, summary.notAfterEpochMillis)
+    }
+
     private class InMemorySecretStore : SecretStore {
         private val values = mutableMapOf<String, String>()
 
