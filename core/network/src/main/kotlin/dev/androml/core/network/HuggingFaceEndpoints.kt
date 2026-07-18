@@ -11,15 +11,25 @@ import java.net.URI
  * A future mirror feature must introduce its own explicit trust policy rather
  * than accepting arbitrary user-provided URLs here.
  */
-class HuggingFaceEndpoints(
-    baseUri: URI = URI.create(DEFAULT_BASE_URL),
+class HuggingFaceEndpoints private constructor(
+    private val baseUri: URI,
+    private val allowTestOrigin: Boolean,
 ) {
+    constructor() : this(URI.create(DEFAULT_BASE_URL), false)
+
+    constructor(baseUri: URI) : this(baseUri, false)
+
     private val origin: String
 
     init {
-        require(baseUri.scheme == "https") { "Hugging Face endpoint must use HTTPS" }
-        require(baseUri.host == OFFICIAL_HOST) { "Hugging Face endpoint must use the official host" }
-        require(baseUri.port == -1) { "Hugging Face endpoint must not specify a custom port" }
+        val isOfficialOrigin =
+            baseUri.scheme == "https" && baseUri.host == OFFICIAL_HOST && baseUri.port == -1
+        val isLocalTestOrigin =
+            allowTestOrigin && baseUri.scheme == "http" && baseUri.host in LOCAL_TEST_HOSTS
+        require(isOfficialOrigin || isLocalTestOrigin) {
+            "Hugging Face endpoint must use the official HTTPS origin"
+        }
+        require(baseUri.host != null) { "Hugging Face endpoint must have a host" }
         require(baseUri.userInfo == null) { "Hugging Face endpoint must not contain credentials" }
         require(baseUri.query == null && baseUri.fragment == null) {
             "Hugging Face endpoint must not contain query or fragment data"
@@ -27,7 +37,7 @@ class HuggingFaceEndpoints(
         require(baseUri.path.isEmpty() || baseUri.path == "/") {
             "Hugging Face endpoint must be an origin"
         }
-        origin = "https://$OFFICIAL_HOST"
+        origin = "${baseUri.scheme}://${baseUri.rawAuthority}"
     }
 
     fun modelInfo(reference: HuggingFaceModelReference): URI =
@@ -60,15 +70,19 @@ class HuggingFaceEndpoints(
         }
     }
 
-    private companion object {
-        const val DEFAULT_BASE_URL = "https://huggingface.co"
-        const val OFFICIAL_HOST = "huggingface.co"
-        const val HEX = "0123456789ABCDEF"
-        val SAFE_ASCII = buildSet {
+    companion object {
+        private const val DEFAULT_BASE_URL = "https://huggingface.co"
+        private const val OFFICIAL_HOST = "huggingface.co"
+        private const val HEX = "0123456789ABCDEF"
+        private val LOCAL_TEST_HOSTS = setOf("localhost", "127.0.0.1")
+        private val SAFE_ASCII = buildSet {
             addAll('0'..'9')
             addAll('A'..'Z')
             addAll('a'..'z')
             addAll(charArrayOf('-', '.', '_', '~').toList())
         }
+
+        internal fun forTesting(baseUri: URI): HuggingFaceEndpoints =
+            HuggingFaceEndpoints(baseUri, allowTestOrigin = true)
     }
 }
