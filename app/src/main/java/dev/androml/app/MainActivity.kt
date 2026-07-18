@@ -1,6 +1,7 @@
 package dev.androml.app
 
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -22,6 +23,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +57,7 @@ import dev.androml.core.database.ModelCatalogRepository
 import dev.androml.core.database.ModelFileEntity
 import dev.androml.core.database.ModelRecordEntity
 import dev.androml.core.device.AndroidDeviceProfileCollector
+import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
@@ -66,9 +69,11 @@ import dev.androml.runtime.api.InferenceEvent
 import dev.androml.runtime.api.InferenceRequest
 import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
+import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
 import dev.androml.runtime.api.FakeRuntimeAdapter
+import dev.androml.runtime.litertlm.LiteRtLmRuntimeDescriptor
 import dev.androml.optimizer.AutoOptimizer
 import java.util.Locale
 import java.util.UUID
@@ -155,6 +160,8 @@ private fun AndroMLApp() {
                 modifier = Modifier.padding(paddingValues),
                 serviceClient = inferenceServiceClient,
                 deviceProfile = deviceProfile,
+                installedModelFiles = catalogFiles,
+                artifactStore = application.artifactStore,
             )
         } else if (selectedDestination == 2) {
             DiscoverScreen(
@@ -197,29 +204,50 @@ private fun PlaygroundScreen(
     modifier: Modifier = Modifier,
     serviceClient: InferenceServiceClient,
     deviceProfile: DeviceProfile,
+    installedModelFiles: List<ModelFileEntity>,
+    artifactStore: FileArtifactStore,
 ) {
     var prompt by remember { mutableStateOf("Say hello from the isolated runtime.") }
     var output by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("Runtime service not checked") }
     var isRunning by remember { mutableStateOf(false) }
     var runJob by remember { mutableStateOf<Job?>(null) }
+    val runnableFiles = remember(installedModelFiles) {
+        installedModelFiles
+            .filter { it.artifactSha256 != null && it.path.endsWith(".litertlm", ignoreCase = true) }
+            .take(16)
+    }
+    var selectedArtifactSha256 by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(runnableFiles) {
+        if (runnableFiles.none { it.artifactSha256 == selectedArtifactSha256 }) {
+            selectedArtifactSha256 = runnableFiles.firstOrNull()?.artifactSha256
+        }
+    }
+    val selectedFile = runnableFiles.firstOrNull { it.artifactSha256 == selectedArtifactSha256 }
     val scope = rememberCoroutineScope()
     val optimizer = remember { AutoOptimizer() }
-    val optimization = remember(deviceProfile) {
+    val model = remember(selectedFile?.artifactSha256, selectedFile?.sizeBytes) {
+        ModelRequirements(
+            workload = ModelWorkload.TextGeneration,
+            weightBytes = selectedFile?.sizeBytes ?: 1L,
+            contextTokens = 2048,
+        )
+    }
+    val optimization = remember(deviceProfile, selectedFile?.artifactSha256, selectedFile?.sizeBytes) {
         optimizer.select(
             device = deviceProfile,
-            model = ModelRequirements(
-                workload = ModelWorkload.TextGeneration,
-                weightBytes = 1L,
-                contextTokens = 2048,
-            ),
-            runtimes = listOf(FakeRuntimeAdapter().descriptor),
+            model = model,
+            runtimes = if (selectedFile == null) {
+                listOf(FakeRuntimeAdapter().descriptor)
+            } else {
+                listOf(LiteRtLmRuntimeDescriptor.value)
+            },
         )
     }
 
     LaunchedEffect(serviceClient) {
         status = try {
-            if (serviceClient.health()) "Isolated runtime ready · fake adapter" else "Runtime service is not ready"
+            if (serviceClient.health()) "Isolated runtime ready · LiteRT-LM CPU + fake preview" else "Runtime service is not ready"
         } catch (_: Throwable) {
             "Runtime service is unavailable"
         }
@@ -243,17 +271,24 @@ private fun PlaygroundScreen(
             var session: OpenedInferenceSession? = null
             try {
                 session = serviceClient.openSession(
-                    model = ModelRequirements(
-                        workload = ModelWorkload.TextGeneration,
-                        weightBytes = 1L,
-                        contextTokens = 2048,
-                    ),
+                    model = model,
                     configuration = RuntimeConfiguration(
                         cpuThreads = optimization.configuration?.cpuThreads
                             ?: deviceProfile.cpuCoreCount.coerceIn(1, 8),
                         contextTokens = 2048,
                         useAcceleration = optimization.configuration?.useAcceleration ?: false,
                     ),
+                    runtimeId = if (selectedFile == null) {
+                        RuntimeId.parse("fake")
+                    } else {
+                        RuntimeId.parse("litertlm")
+                    },
+                    modelFile = selectedFile?.artifactSha256?.let { hash ->
+                        ParcelFileDescriptor.open(
+                            artifactStore.fileFor(hash),
+                            ParcelFileDescriptor.MODE_READ_ONLY,
+                        )
+                    },
                 )
                 status = "Auto-picked ${session.runtimeId.value} · ${optimization.configuration?.cpuThreads ?: 1} CPU threads in :inference"
                 val request = InferenceRequest(
@@ -292,9 +327,30 @@ private fun PlaygroundScreen(
         item {
             Text("Playground", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "Exercise the streaming contract and process isolation before native runtime packs are installed.",
+                "Run a verified .litertlm model through the isolated CPU runtime, or use the deterministic fake preview when no model is installed.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Installed text models", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    if (runnableFiles.isEmpty()) {
+                        Text("No verified .litertlm artifact is installed. Discover one from Hugging Face first.")
+                    } else {
+                        Text("Select a content-addressed model artifact:", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(6.dp))
+                        runnableFiles.forEach { file ->
+                            FilterChip(
+                                selected = file.artifactSha256 == selectedArtifactSha256,
+                                onClick = { selectedArtifactSha256 = file.artifactSha256 },
+                                label = { Text(file.path.take(48)) },
+                            )
+                        }
+                    }
+                }
+            }
         }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -310,7 +366,12 @@ private fun PlaygroundScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
-                    AssistChip(onClick = {}, label = { Text("Fake adapter · test only") })
+                    AssistChip(
+                        onClick = {},
+                        label = {
+                            Text(if (selectedFile == null) "Fake preview · test only" else "LiteRT-LM · CPU")
+                        },
+                    )
                 }
             }
         }

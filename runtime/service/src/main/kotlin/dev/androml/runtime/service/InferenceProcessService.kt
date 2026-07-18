@@ -8,6 +8,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import android.os.ParcelFileDescriptor
 import android.os.RemoteException
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
@@ -19,6 +20,7 @@ import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
+import dev.androml.runtime.litertlm.LiteRtLmRuntimeAdapter
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
 import kotlinx.coroutines.CancellationException
@@ -28,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /** Non-exported, network-free process boundary for runtime execution. */
 class InferenceProcessService : Service() {
@@ -67,6 +70,10 @@ class InferenceProcessService : Service() {
     }
 
     private fun openSession(data: Bundle, replyTo: Messenger) {
+        val runtimeId = data.getString(InferenceServiceProtocol.RUNTIME_ID_KEY)
+            ?.let { runCatching { dev.androml.runtime.api.RuntimeId.parse(it) }.getOrNull() }
+        @Suppress("DEPRECATION")
+        val modelFile = data.getParcelable(InferenceServiceProtocol.MODEL_FD_KEY) as? ParcelFileDescriptor
         val workload = data.getString(InferenceServiceProtocol.MODEL_WORKLOAD_KEY)
             ?.takeIf { it.length <= InferenceServiceProtocol.MAX_MODEL_WORKLOAD_CHARS }
             ?.let { raw -> runCatching { ModelWorkload.valueOf(raw) }.getOrNull() }
@@ -75,7 +82,8 @@ class InferenceProcessService : Service() {
         val contextTokens = data.getInt(InferenceServiceProtocol.MODEL_CONTEXT_TOKENS_KEY, -1)
         val cpuThreads = data.getInt(InferenceServiceProtocol.CPU_THREADS_KEY, -1)
         val useAcceleration = data.getBoolean(InferenceServiceProtocol.USE_ACCELERATION_KEY, false)
-        if (workload == null || weightBytes < 0L || kvBytes < 0L || contextTokens < 0) {
+        if (runtimeId == null || workload == null || weightBytes < 0L || kvBytes < 0L || contextTokens < 0) {
+            modelFile?.close()
             sendFailure(replyTo, null, null, InferenceErrorCode.InvalidRequest, "invalid model requirements")
             return
         }
@@ -86,31 +94,51 @@ class InferenceProcessService : Service() {
                 useAcceleration = useAcceleration,
             )
         }.getOrElse {
+            modelFile?.close()
             sendFailure(replyTo, null, null, InferenceErrorCode.InvalidRequest, "invalid runtime configuration")
             return
         }
-        val model = ModelRequirements(
-            workload = workload,
-            weightBytes = weightBytes,
-            kvCacheBytesPerToken = kvBytes,
-            contextTokens = contextTokens,
-        )
-        val session = runCatching { FakeRuntimeAdapter().openSession(model, configuration) }
-            .getOrElse {
+        serviceScope.launch {
+            val model = ModelRequirements(
+                workload = workload,
+                weightBytes = weightBytes,
+                kvCacheBytesPerToken = kvBytes,
+                contextTokens = contextTokens,
+            )
+            val session = try {
+                withTimeout(60_000L) {
+                    when (runtimeId.value) {
+                        "fake" -> {
+                            modelFile?.close()
+                            FakeRuntimeAdapter().openSession(model, configuration)
+                        }
+                        "litertlm" -> {
+                            val descriptor = modelFile ?: throw IllegalArgumentException("model file is required")
+                            LiteRtLmRuntimeAdapter("/proc/self/fd/${descriptor.fd}").openSession(model, configuration)
+                        }
+                        else -> throw IllegalArgumentException("runtime is not installed")
+                    }
+                }
+            } catch (_: CancellationException) {
+                modelFile?.close()
+                return@launch
+            } catch (_: Exception) {
+                modelFile?.close()
                 sendFailure(replyTo, null, null, InferenceErrorCode.RuntimeUnavailable, "runtime cannot serve model")
-                return
+                return@launch
             }
-        val active = ActiveSession(session, replyTo)
-        sessions[session.id.value] = active
-        send(
-            replyTo,
-            InferenceServiceProtocol.EVENT_SESSION_OPENED,
-            Bundle().apply {
-                putInt(InferenceServiceProtocol.VERSION_KEY, InferenceServiceProtocol.PROTOCOL_VERSION)
-                putString(InferenceServiceProtocol.SESSION_ID_KEY, session.id.value)
-                putString(InferenceServiceProtocol.RUNTIME_ID_KEY, session.runtimeId.value)
-            },
-        )
+            val active = ActiveSession(session, replyTo, modelFile)
+            sessions[session.id.value] = active
+            send(
+                replyTo,
+                InferenceServiceProtocol.EVENT_SESSION_OPENED,
+                Bundle().apply {
+                    putInt(InferenceServiceProtocol.VERSION_KEY, InferenceServiceProtocol.PROTOCOL_VERSION)
+                    putString(InferenceServiceProtocol.SESSION_ID_KEY, session.id.value)
+                    putString(InferenceServiceProtocol.RUNTIME_ID_KEY, session.runtimeId.value)
+                },
+            )
+        }
     }
 
     private fun generate(data: Bundle, replyTo: Messenger) {
@@ -178,7 +206,7 @@ class InferenceProcessService : Service() {
         send(replyTo, InferenceServiceProtocol.EVENT_HEALTH, Bundle().apply {
             putInt(InferenceServiceProtocol.VERSION_KEY, InferenceServiceProtocol.PROTOCOL_VERSION)
             putBoolean(InferenceServiceProtocol.READY_KEY, true)
-            putString(InferenceServiceProtocol.RUNTIME_ID_KEY, "fake")
+            putString(InferenceServiceProtocol.RUNTIME_ID_KEY, "litertlm")
         })
     }
 
@@ -261,6 +289,7 @@ class InferenceProcessService : Service() {
     private class ActiveSession(
         val session: RuntimeSession,
         @Volatile var replyTo: Messenger,
+        private val modelFile: ParcelFileDescriptor?,
     ) {
         val jobs: ConcurrentMap<String, kotlinx.coroutines.Job> = ConcurrentHashMap()
 
@@ -268,6 +297,7 @@ class InferenceProcessService : Service() {
             jobs.values.forEach { it.cancel() }
             jobs.clear()
             session.close()
+            modelFile?.close()
         }
     }
 }

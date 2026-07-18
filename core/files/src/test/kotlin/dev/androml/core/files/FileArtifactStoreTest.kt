@@ -26,6 +26,7 @@ class FileArtifactStoreTest {
         assertEquals(bytes.size.toLong(), reference.sizeBytes)
         assertTrue(store.contains(hash))
         assertArrayEquals(bytes, store.open(hash).use { it.readBytes() })
+        assertEquals(root.resolve("artifacts/$hash").canonicalFile, store.fileFor(hash).canonicalFile)
         assertTrue(root.resolve("artifacts/$hash").isFile)
         assertTrue(root.resolve("staging").listFiles().orEmpty().isEmpty())
         deleteTree(root)

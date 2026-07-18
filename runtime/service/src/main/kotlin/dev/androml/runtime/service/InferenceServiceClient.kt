@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import android.os.ParcelFileDescriptor
 import android.os.RemoteException
 import dev.androml.core.model.ModelRequirements
 import dev.androml.runtime.api.InferenceErrorCode
@@ -118,21 +119,30 @@ class InferenceServiceClient(context: Context) {
     suspend fun openSession(
         model: ModelRequirements,
         configuration: RuntimeConfiguration,
+        runtimeId: RuntimeId = RuntimeId.parse("fake"),
+        modelFile: ParcelFileDescriptor? = null,
     ): OpenedInferenceSession = openMutex.withLock {
         connect()
         val deferred = CompletableDeferred<OpenedInferenceSession>()
         openDeferred = deferred
-        send(
-            InferenceServiceProtocol.OPEN_SESSION,
-            Bundle().apply {
-                putString(InferenceServiceProtocol.MODEL_WORKLOAD_KEY, model.workload.name)
-                putLong(InferenceServiceProtocol.MODEL_WEIGHT_BYTES_KEY, model.weightBytes)
-                putLong(InferenceServiceProtocol.MODEL_KV_BYTES_PER_TOKEN_KEY, model.kvCacheBytesPerToken)
-                putInt(InferenceServiceProtocol.MODEL_CONTEXT_TOKENS_KEY, model.contextTokens)
-                putInt(InferenceServiceProtocol.CPU_THREADS_KEY, configuration.cpuThreads)
-                putBoolean(InferenceServiceProtocol.USE_ACCELERATION_KEY, configuration.useAcceleration)
-            },
-        )
+        try {
+            send(
+                InferenceServiceProtocol.OPEN_SESSION,
+                Bundle().apply {
+                    putString(InferenceServiceProtocol.MODEL_WORKLOAD_KEY, model.workload.name)
+                    putLong(InferenceServiceProtocol.MODEL_WEIGHT_BYTES_KEY, model.weightBytes)
+                    putLong(InferenceServiceProtocol.MODEL_KV_BYTES_PER_TOKEN_KEY, model.kvCacheBytesPerToken)
+                    putInt(InferenceServiceProtocol.MODEL_CONTEXT_TOKENS_KEY, model.contextTokens)
+                    putInt(InferenceServiceProtocol.CPU_THREADS_KEY, configuration.cpuThreads)
+                    putBoolean(InferenceServiceProtocol.USE_ACCELERATION_KEY, configuration.useAcceleration)
+                    putString(InferenceServiceProtocol.RUNTIME_ID_KEY, runtimeId.value)
+                    @Suppress("DEPRECATION")
+                    modelFile?.let { putParcelable(InferenceServiceProtocol.MODEL_FD_KEY, it) }
+                },
+            )
+        } finally {
+            modelFile?.close()
+        }
         return try {
             deferred.await()
         } finally {

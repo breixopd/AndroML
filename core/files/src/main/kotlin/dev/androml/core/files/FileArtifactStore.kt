@@ -85,6 +85,14 @@ class FileArtifactStore(private val root: File) {
         return FileInputStream(file)
     }
 
+    /** Returns a verified, immutable artifact location for APIs that must transfer a read-only FD. */
+    fun fileFor(sha256: String): File {
+        require(isSha256(sha256)) { "sha256 must be 64 lowercase hexadecimal characters" }
+        val file = artifactFile(sha256)
+        check(file.isFile) { "artifact not found: $sha256" }
+        return file
+    }
+
     internal fun commit(staged: StagedArtifact): StoredArtifact {
         check(staged.isComplete) { "staged artifact must be completely written before commit" }
 

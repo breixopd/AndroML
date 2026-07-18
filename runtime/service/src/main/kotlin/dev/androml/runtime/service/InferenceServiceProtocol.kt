@@ -29,6 +29,7 @@ object InferenceServiceProtocol {
     const val MODEL_CONTEXT_TOKENS_KEY = "model_context_tokens"
     const val CPU_THREADS_KEY = "cpu_threads"
     const val USE_ACCELERATION_KEY = "use_acceleration"
+    const val MODEL_FD_KEY = "model_fd"
     const val PROMPT_KEY = "prompt"
     const val MAX_NEW_TOKENS_KEY = "max_new_tokens"
     const val TEMPERATURE_KEY = "temperature"
