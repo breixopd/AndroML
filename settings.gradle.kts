@@ -18,4 +18,4 @@ rootProject.name = "AndroML"
 
 include(":app")
 include(":core:model")
-
+include(":core:files")
