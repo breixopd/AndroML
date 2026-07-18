@@ -95,6 +95,7 @@ dependencies {
     implementation(project(":core:security"))
     implementation(project(":core:device"))
     implementation(project(":core:network"))
+    implementation(project(":runtime:service"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.android)

@@ -71,4 +71,9 @@ interface RuntimeAdapter {
     val descriptor: RuntimeDescriptor
 
     fun inspect(model: ModelRequirements): RuntimeCompatibilityReport
+
+    fun openSession(
+        model: ModelRequirements,
+        configuration: RuntimeConfiguration,
+    ): RuntimeSession
 }
