@@ -16,6 +16,9 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:api"))
+    implementation(libs.bcprov)
+    implementation(libs.bcpkix)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
 }

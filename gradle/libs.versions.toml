@@ -14,6 +14,7 @@ okhttp = "5.3.0"
 room = "2.8.4"
 work = "2.11.2"
 ktor = "3.5.1"
+bouncy-castle = "1.84"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -49,3 +50,5 @@ ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negoti
 ktor-server-call-logging = { module = "io.ktor:ktor-server-call-logging", version.ref = "ktor" }
 ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
+bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncy-castle" }
+bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncy-castle" }
