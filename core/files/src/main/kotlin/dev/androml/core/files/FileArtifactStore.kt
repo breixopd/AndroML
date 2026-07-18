@@ -5,6 +5,7 @@ import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
+import java.io.RandomAccessFile
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -45,6 +46,31 @@ class FileArtifactStore(private val root: File) {
         return StagedArtifact(this, temporaryFile, expectedSha256, expectedSizeBytes)
     }
 
+    /**
+     * Opens a durable, job-keyed partial artifact. The partial is not visible
+     * through [contains] or [open] until [ResumableArtifact.commit] succeeds.
+     */
+    fun beginResumable(
+        key: String,
+        expectedSha256: String,
+        expectedSizeBytes: Long,
+    ): ResumableArtifact {
+        require(isResumableKey(key)) { "key must contain only safe filename characters" }
+        require(isSha256(expectedSha256)) {
+            "expectedSha256 must be 64 lowercase hexadecimal characters"
+        }
+        require(expectedSizeBytes >= 0) { "expectedSizeBytes must be non-negative" }
+
+        val stagingDirectory = File(root, STAGING_DIRECTORY).apply { mkdirs() }
+        val partialFile = File(stagingDirectory, "$key.partial")
+        if (partialFile.isFile && partialFile.length() > expectedSizeBytes) {
+            val actualSize = partialFile.length()
+            quarantine(partialFile, "partial-size")
+            throw ArtifactSizeException(expectedSizeBytes, actualSize)
+        }
+        return ResumableArtifact(this, partialFile, expectedSha256, expectedSizeBytes)
+    }
+
     fun contains(sha256: String): Boolean {
         require(isSha256(sha256)) { "sha256 must be 64 lowercase hexadecimal characters" }
         return artifactFile(sha256).isFile
@@ -62,33 +88,52 @@ class FileArtifactStore(private val root: File) {
     internal fun commit(staged: StagedArtifact): StoredArtifact {
         check(staged.isComplete) { "staged artifact must be completely written before commit" }
 
-        val actualSize = staged.file.length()
-        val expectedSize = staged.expectedSizeBytes
+        val result = commitFile(staged.file, staged.expectedSha256, staged.expectedSizeBytes)
+        staged.markCommitted()
+        return result
+    }
+
+    internal fun commitResumable(staged: ResumableArtifact): StoredArtifact {
+        check(!staged.isCommitted) { "resumable artifact has already been committed" }
+
+        val result = commitFile(staged.file, staged.expectedSha256, staged.expectedSizeBytes)
+        staged.markCommitted()
+        return result
+    }
+
+    private fun commitFile(
+        file: File,
+        expectedSha256: String,
+        expectedSizeBytes: Long?,
+    ): StoredArtifact {
+        check(file.isFile) { "staged artifact file does not exist" }
+
+        val actualSize = file.length()
+        val expectedSize = expectedSizeBytes
         if (expectedSize != null && actualSize != expectedSize) {
-            quarantine(staged.file, "size")
+            quarantine(file, "size")
             throw ArtifactSizeException(expectedSize, actualSize)
         }
 
-        val actualSha256 = sha256(staged.file)
-        if (actualSha256 != staged.expectedSha256) {
-            quarantine(staged.file, "hash")
-            throw ArtifactIntegrityException(staged.expectedSha256, actualSha256)
+        val actualSha256 = sha256(file)
+        if (actualSha256 != expectedSha256) {
+            quarantine(file, "hash")
+            throw ArtifactIntegrityException(expectedSha256, actualSha256)
         }
 
-        val destination = artifactFile(staged.expectedSha256)
+        val destination = artifactFile(expectedSha256)
         destination.parentFile?.mkdirs()
         if (destination.isFile) {
             val existingHash = sha256(destination)
-            check(existingHash == staged.expectedSha256) {
-                "existing artifact has an unexpected hash: ${staged.expectedSha256}"
+            check(existingHash == expectedSha256) {
+                "existing artifact has an unexpected hash: $expectedSha256"
             }
-            staged.file.delete()
+            file.delete()
         } else {
-            atomicMove(staged.file, destination)
+            atomicMove(file, destination)
         }
 
-        staged.markCommitted()
-        return StoredArtifact(staged.expectedSha256, actualSize)
+        return StoredArtifact(expectedSha256, actualSize)
     }
 
     internal fun discard(file: File) {
@@ -141,6 +186,11 @@ class FileArtifactStore(private val root: File) {
 
         private fun isSha256(value: String): Boolean =
             value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
+
+        private fun isResumableKey(value: String): Boolean =
+            value.length in 1..128 &&
+                value.first().let { it.isLetterOrDigit() } &&
+                value.all { it.isLetterOrDigit() || it == '-' || it == '_' || it == '.' }
 
         private fun MessageDigest.toHex(): String = digest()
             .joinToString("") { byte -> "%02x".format(byte) }
@@ -198,5 +248,84 @@ class FileArtifactStore(private val root: File) {
         internal fun markCommitted() {
             isComplete = false
         }
+    }
+
+    /** A durable partial artifact used by resumable network transfers. */
+    class ResumableArtifact internal constructor(
+        private val store: FileArtifactStore,
+        internal val file: File,
+        internal val expectedSha256: String,
+        internal val expectedSizeBytes: Long,
+    ) : AutoCloseable {
+        var isCommitted: Boolean = false
+            private set
+
+        val bytesWritten: Long
+            get() = if (file.isFile) file.length() else 0L
+
+        /** Appends bytes and leaves the durable partial intact if the input fails. */
+        fun appendFrom(
+            input: InputStream,
+            maxBytes: Long = expectedSizeBytes - bytesWritten,
+            onBytesWritten: (Long) -> Unit = {},
+        ) {
+            check(!isCommitted) { "resumable artifact has already been committed" }
+            require(maxBytes >= 0) { "maxBytes must be non-negative" }
+            require(bytesWritten <= expectedSizeBytes) {
+                "resumable artifact already exceeds the expected size"
+            }
+            require(maxBytes <= expectedSizeBytes - bytesWritten) {
+                "maxBytes must not exceed the remaining expected size"
+            }
+
+            val initialSize = bytesWritten
+            file.parentFile?.mkdirs()
+            RandomAccessFile(file, "rw").use { randomAccess ->
+                randomAccess.seek(initialSize)
+                val buffer = ByteArray(BUFFER_SIZE)
+                var appended = 0L
+                try {
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        if (read == 0) continue
+                        if (read.toLong() > maxBytes - appended) {
+                            randomAccess.setLength(initialSize)
+                            randomAccess.fd.sync()
+                            throw ArtifactSizeException(maxBytes, appended + read)
+                        }
+                        randomAccess.write(buffer, 0, read)
+                        appended += read
+                        onBytesWritten(initialSize + appended)
+                    }
+                    randomAccess.fd.sync()
+                } catch (exception: ArtifactSizeException) {
+                    throw exception
+                } catch (exception: IOException) {
+                    throw exception
+                }
+            }
+        }
+
+        fun reset() {
+            check(!isCommitted) { "resumable artifact has already been committed" }
+            if (!file.isFile) return
+            RandomAccessFile(file, "rw").use { randomAccess ->
+                randomAccess.setLength(0L)
+                randomAccess.fd.sync()
+            }
+        }
+
+        fun commit(): StoredArtifact = store.commitResumable(this)
+
+        fun discard() {
+            if (!isCommitted) file.delete()
+        }
+
+        internal fun markCommitted() {
+            isCommitted = true
+        }
+
+        override fun close() = Unit
     }
 }

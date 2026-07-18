@@ -88,6 +88,68 @@ class FileArtifactStoreTest {
         deleteTree(root)
     }
 
+    @Test
+    fun resumableArtifactSurvivesReopenAndCommitsAfterAppendingTheRest() {
+        val root = temporaryRoot()
+        val bytes = "resumable-model-bytes".toByteArray()
+        val hash = sha256(bytes)
+        val store = FileArtifactStore(root)
+
+        store.beginResumable("job-1", hash, bytes.size.toLong()).use { partial ->
+            partial.appendFrom(ByteArrayInputStream(bytes.copyOfRange(0, 9)))
+            assertEquals(9L, partial.bytesWritten)
+        }
+
+        val reopened = store.beginResumable("job-1", hash, bytes.size.toLong())
+        assertEquals(9L, reopened.bytesWritten)
+        reopened.appendFrom(ByteArrayInputStream(bytes.copyOfRange(9, bytes.size)))
+        assertEquals(bytes.size.toLong(), reopened.bytesWritten)
+        val committed = reopened.commit()
+
+        assertEquals(hash, committed.sha256)
+        assertArrayEquals(bytes, store.open(hash).use { it.readBytes() })
+        assertFalse(root.resolve("staging/job-1.partial").exists())
+        deleteTree(root)
+    }
+
+    @Test
+    fun resumableAppendOverflowLeavesTheExistingPartialUnchanged() {
+        val root = temporaryRoot()
+        val bytes = "partial".toByteArray()
+        val store = FileArtifactStore(root)
+        val partial = store.beginResumable("job-2", sha256(bytes), bytes.size.toLong())
+        partial.appendFrom(ByteArrayInputStream(bytes.copyOfRange(0, 3)))
+
+        var failure: ArtifactSizeException? = null
+        try {
+            partial.appendFrom(ByteArrayInputStream("too-long".toByteArray()))
+        } catch (exception: ArtifactSizeException) {
+            failure = exception
+        }
+
+        assertEquals(bytes.size.toLong() - 3L, failure?.maximumBytes)
+        assertEquals(3L, partial.bytesWritten)
+        deleteTree(root)
+    }
+
+    @Test
+    fun resumableKeysAreValidatedBeforeCreatingPartialFiles() {
+        val root = temporaryRoot()
+        val store = FileArtifactStore(root)
+        val hash = sha256("bytes".toByteArray())
+
+        var failure: IllegalArgumentException? = null
+        try {
+            store.beginResumable("../outside", hash, 5L)
+        } catch (exception: IllegalArgumentException) {
+            failure = exception
+        }
+
+        assertTrue(failure != null)
+        assertTrue(root.listFiles().orEmpty().isEmpty())
+        deleteTree(root)
+    }
+
     private fun temporaryRoot(): File = Files.createTempDirectory("androml-artifacts-").toFile()
 
     private fun deleteTree(root: File) {
