@@ -33,9 +33,12 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import dev.androml.core.device.AndroidDeviceProfileCollector
+import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ReleasePolicy
 
 class MainActivity : ComponentActivity() {
@@ -60,6 +63,10 @@ private fun AndroMLTheme(content: @Composable () -> Unit) {
 private fun AndroMLApp() {
     val destinations = listOf("Home", "Discover", "Library", "More")
     var selectedDestination by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    val deviceProfile = remember(context) {
+        AndroidDeviceProfileCollector(context.applicationContext).collect()
+    }
 
     Scaffold(
         topBar = {
@@ -92,6 +99,7 @@ private fun AndroMLApp() {
             HomeScreen(
                 modifier = Modifier.padding(paddingValues),
                 releasePolicy = ReleasePolicy.testPeriod(),
+                deviceProfile = deviceProfile,
             )
         } else {
             PlaceholderDestination(
@@ -106,6 +114,7 @@ private fun AndroMLApp() {
 private fun HomeScreen(
     modifier: Modifier = Modifier,
     releasePolicy: ReleasePolicy,
+    deviceProfile: DeviceProfile,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -133,8 +142,8 @@ private fun HomeScreen(
         item {
             StatusCard(
                 title = "Device readiness",
-                value = "Profile pending",
-                detail = "Hardware, RAM, thermal state, and accelerators will be measured here.",
+                value = "${deviceProfile.deviceName} · ${deviceProfile.readiness}",
+                detail = deviceProfile.resourceSummary,
             )
         }
         item {
@@ -195,7 +204,21 @@ private fun PlaceholderDestination(name: String, modifier: Modifier = Modifier) 
 @Composable
 private fun HomeScreenPreview() {
     AndroMLTheme {
-        HomeScreen(releasePolicy = ReleasePolicy.testPeriod())
+        HomeScreen(
+            releasePolicy = ReleasePolicy.testPeriod(),
+            deviceProfile = DeviceProfile(
+                manufacturer = "Google",
+                model = "Pixel Preview",
+                androidApi = 37,
+                supportedAbis = listOf("arm64-v8a"),
+                cpuCoreCount = 8,
+                totalMemoryBytes = 8L * 1024L * 1024L * 1024L,
+                availableMemoryBytes = 4L * 1024L * 1024L * 1024L,
+                availableStorageBytes = 64L * 1024L * 1024L * 1024L,
+                isCharging = true,
+                thermalStatus = dev.androml.core.model.ThermalStatus.Nominal,
+                hasVulkan = true,
+            ),
+        )
     }
 }
-
