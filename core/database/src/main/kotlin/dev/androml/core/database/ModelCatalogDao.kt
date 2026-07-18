@@ -12,6 +12,9 @@ abstract class ModelCatalogDao {
     @Query("SELECT * FROM model_records ORDER BY observedAtEpochMillis DESC, modelId ASC, revision ASC")
     abstract fun observeModels(): Flow<List<ModelRecordEntity>>
 
+    @Query("SELECT * FROM model_records ORDER BY observedAtEpochMillis DESC, modelId ASC, revision ASC")
+    abstract suspend fun listModels(): List<ModelRecordEntity>
+
     @Query("SELECT * FROM model_files ORDER BY modelId ASC, revision ASC, path ASC")
     abstract fun observeAllFiles(): Flow<List<ModelFileEntity>>
 

@@ -97,7 +97,7 @@ private fun AndroMLTheme(content: @Composable () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AndroMLApp() {
-    val destinations = listOf("Home", "Playground", "Discover", "Library", "More")
+    val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "API", "More")
     var selectedDestination by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val application = context.applicationContext as AndroMLApplication
@@ -110,6 +110,9 @@ private fun AndroMLApp() {
     val catalogRepository = application.catalogRepository
     val catalogModels by catalogRepository.observeModels().collectAsState(initial = emptyList())
     val catalogFiles by catalogRepository.observeAllFiles().collectAsState(initial = emptyList())
+    val apiController = application.apiController
+    val apiKeyRepository = application.apiKeyRepository
+    val ragRepository = application.ragRepository
 
     Scaffold(
         topBar = {
@@ -164,6 +167,18 @@ private fun AndroMLApp() {
                 modifier = Modifier.padding(paddingValues),
                 models = catalogModels,
                 files = catalogFiles,
+            )
+        } else if (selectedDestination == 4) {
+            RagScreen(
+                modifier = Modifier.padding(paddingValues),
+                repository = ragRepository,
+                artifactStore = application.artifactStore,
+            )
+        } else if (selectedDestination == 5) {
+            ApiScreen(
+                modifier = Modifier.padding(paddingValues),
+                controller = apiController,
+                keyRepository = apiKeyRepository,
             )
         } else {
             PlaceholderDestination(

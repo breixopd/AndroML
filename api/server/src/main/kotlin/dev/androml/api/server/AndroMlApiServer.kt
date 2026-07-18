@@ -165,7 +165,7 @@ class LanMtlsRequiredException : IllegalStateException(
 class AndroMlApiServer(
     private val config: ApiServerConfig,
     private val apiKeys: suspend () -> Collection<ApiKeyRecord>,
-    private val models: () -> List<String>,
+    private val models: suspend () -> List<String>,
     private val inference: ApiInferenceGateway,
     private val securityPolicy: ApiSecurityPolicy = ApiSecurityPolicy(),
     private val onKeyUsed: suspend (ApiKeyId) -> Unit = {},

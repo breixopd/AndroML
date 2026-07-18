@@ -10,6 +10,8 @@ class ModelCatalogRepository(
 ) {
     fun observeModels(): Flow<List<ModelRecordEntity>> = dao.observeModels()
 
+    suspend fun snapshotModels(): List<ModelRecordEntity> = dao.listModels()
+
     fun observeAllFiles(): Flow<List<ModelFileEntity>> = dao.observeAllFiles()
 
     fun observeFiles(reference: HuggingFaceModelReference): Flow<List<ModelFileEntity>> =
