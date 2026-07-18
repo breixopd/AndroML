@@ -1,5 +1,6 @@
 package dev.androml.core.database
 
+import dev.androml.cluster.core.ContentHash
 import dev.androml.core.model.HuggingFaceModelReference
 import dev.androml.core.model.HuggingFaceRepositoryMetadata
 import kotlinx.coroutines.flow.Flow
@@ -16,6 +17,10 @@ class ModelCatalogRepository(
         require(artifactSha256.matches(Regex("[a-f0-9]{64}"))) { "artifact hash must be SHA-256" }
         return dao.fileForArtifact(artifactSha256)
     }
+
+    suspend fun installedArtifactHashes(): Set<ContentHash> = dao.listVerifiedArtifactHashes()
+        .map(ContentHash::parse)
+        .toSet()
 
     fun observeAllFiles(): Flow<List<ModelFileEntity>> = dao.observeAllFiles()
 

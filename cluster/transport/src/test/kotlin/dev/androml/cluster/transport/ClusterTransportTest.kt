@@ -3,12 +3,14 @@ package dev.androml.cluster.transport
 import dev.androml.cluster.core.ClusterExecutionHandler
 import dev.androml.cluster.core.ClusterExecutionRequest
 import dev.androml.cluster.core.ClusterExecutionStatus
+import dev.androml.cluster.core.ClusterCapabilityAdvertisement
 import dev.androml.cluster.core.ClusterJobId
 import dev.androml.cluster.core.ClusterRequest
 import dev.androml.cluster.core.ClusterWorkload
 import dev.androml.cluster.core.ContentHash
 import dev.androml.cluster.core.IdempotentClusterExecutor
 import dev.androml.cluster.core.InMemoryClusterJobLedger
+import dev.androml.cluster.core.NodeCapabilities
 import dev.androml.cluster.core.PeerEndpoint
 import dev.androml.cluster.core.PeerId
 import dev.androml.core.api.CertificateFingerprint
@@ -44,6 +46,18 @@ class ClusterTransportTest {
                     it.payload.reversedArray()
                 },
             ),
+            localAdvertisement = {
+                ClusterCapabilityAdvertisement(
+                    nodeId = PeerId.parse("node-server"),
+                    capabilities = NodeCapabilities(
+                        supportedWorkloads = setOf(ClusterWorkload.InferenceReplica),
+                        maxConcurrentJobs = 2,
+                        availableRamBytes = 1_000_000L,
+                        queueDepth = 0,
+                        lastSeenEpochMillis = 60_000L,
+                    ),
+                )
+            },
         )
 
         server.start()
@@ -53,6 +67,7 @@ class ClusterTransportTest {
                 trustedServerCertificate = serverIdentity.certificate,
             )
             val request = executionRequest(sourcePeer = "node-a")
+            val capabilities = client.fetchCapabilities(PeerEndpoint("127.0.0.1", port))
 
             val first = client.execute(PeerEndpoint("127.0.0.1", port), request)
             val second = client.execute(PeerEndpoint("127.0.0.1", port), request)
@@ -61,6 +76,7 @@ class ClusterTransportTest {
             assertEquals("payload".reversed(), first.output!!.toString(Charsets.UTF_8))
             assertEquals(ClusterExecutionStatus.AlreadyCompleted, second.status)
             assertEquals(first.outputHash, second.outputHash)
+            assertEquals("node-server", capabilities.nodeId.value)
             assertEquals(1, executions)
         } finally {
             server.stop()

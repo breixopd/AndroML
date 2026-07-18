@@ -175,6 +175,45 @@ fun ClusterScreen(
         }
     }
 
+    fun refreshCapabilities() {
+        val candidates = peers.filter { it.peer.paired && !it.peer.revoked }
+        if (candidates.isEmpty()) {
+            message = "No active peers need a capability refresh"
+            return
+        }
+        busy = true
+        message = null
+        scope.launch {
+            try {
+                val failures = mutableListOf<String>()
+                var refreshed = 0
+                withContext(Dispatchers.IO) {
+                    candidates.forEach { peer ->
+                        try {
+                            controller.refreshPeer(peer.peer.id)
+                            refreshed += 1
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Throwable) {
+                            failures += "${peer.peer.displayName}: ${error.message ?: "unavailable"}"
+                        }
+                    }
+                }
+                message = if (failures.isEmpty()) {
+                    "Refreshed capabilities from $refreshed peer(s)"
+                } else {
+                    "Refreshed $refreshed peer(s); ${failures.joinToString(limit = 2)}"
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "Capabilities could not be refreshed"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -271,6 +310,11 @@ fun ClusterScreen(
                         CircularProgressIndicator()
                     } else {
                         Text("mTLS identity: ${localIdentity!!.alias}", fontWeight = FontWeight.Bold)
+                        Text("Node ID: ${clusterNodeId(localIdentity!!.fingerprint).value}", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "Use this exact node ID when pairing this phone from another device.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         Text("SHA-256 certificate fingerprint", style = MaterialTheme.typography.labelMedium)
                         SelectionContainer { Text(localIdentity!!.fingerprint.value, style = MaterialTheme.typography.bodySmall) }
                         Text(
@@ -300,7 +344,7 @@ fun ClusterScreen(
                         onValueChange = { peerId = it.take(64) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Peer ID") },
-                        placeholder = { Text("pixel-2") },
+                        placeholder = { Text("node-7f3a…") },
                         singleLine = true,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -381,7 +425,14 @@ fun ClusterScreen(
         message?.let { currentMessage ->
             item { Text(currentMessage, color = MaterialTheme.colorScheme.primary) }
         }
-        item { Text("Paired peers", style = MaterialTheme.typography.titleMedium) }
+        item {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text("Paired peers", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = ::refreshCapabilities, enabled = !busy && peers.isNotEmpty()) {
+                    Text("Refresh capabilities")
+                }
+            }
+        }
         if (peers.isEmpty()) {
             item { Text("No peers are paired. Pair a phone before starting the cluster listener.") }
         } else {

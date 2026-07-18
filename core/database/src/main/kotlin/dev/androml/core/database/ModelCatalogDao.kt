@@ -21,6 +21,9 @@ abstract class ModelCatalogDao {
     @Query("SELECT * FROM model_files WHERE artifactSha256 = :artifactSha256 LIMIT 1")
     abstract suspend fun fileForArtifact(artifactSha256: String): ModelFileEntity?
 
+    @Query("SELECT artifactSha256 FROM model_files WHERE artifactSha256 IS NOT NULL")
+    abstract suspend fun listVerifiedArtifactHashes(): List<String>
+
     @Query(
         "SELECT * FROM model_files " +
             "WHERE modelId = :modelId AND revision = :revision " +

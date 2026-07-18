@@ -2,6 +2,8 @@ package dev.androml.cluster.transport
 
 import dev.androml.cluster.core.ClusterExecutionRequest
 import dev.androml.cluster.core.ClusterExecutionResponse
+import dev.androml.cluster.core.ClusterCapabilityAdvertisement
+import dev.androml.cluster.core.ClusterCapabilitiesCodec
 import dev.androml.cluster.core.ClusterWireCodec
 import dev.androml.cluster.core.IdempotentClusterExecutor
 import dev.androml.cluster.core.PeerEndpoint
@@ -22,6 +24,7 @@ import io.ktor.server.engine.sslConnector
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.RoutingCall
+import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.netty.Netty
@@ -69,6 +72,7 @@ class ClusterExecutionServer(
     private val tlsMaterial: TlsServerMaterial,
     private val pairedPeers: () -> Map<CertificateFingerprint, PeerId>,
     private val executor: IdempotentClusterExecutor,
+    private val localAdvertisement: (() -> ClusterCapabilityAdvertisement?)? = null,
 ) {
     private var engine: EmbeddedServer<*, *>? = null
 
@@ -101,6 +105,28 @@ class ClusterExecutionServer(
 
     fun Application.module() {
         routing {
+            get("/cluster/v1/capabilities") {
+                val peerFingerprint = peerFingerprint(call)
+                if (peerFingerprint == null || pairedPeers()[peerFingerprint] == null) {
+                    call.respondText(
+                        "{\"error\":\"peer certificate is not paired\"}",
+                        status = HttpStatusCode.Forbidden,
+                    )
+                    return@get
+                }
+                val advertisement = localAdvertisement?.invoke()
+                if (advertisement == null) {
+                    call.respondText(
+                        "{\"error\":\"capabilities are unavailable\"}",
+                        status = HttpStatusCode.ServiceUnavailable,
+                    )
+                    return@get
+                }
+                call.respondText(
+                    ClusterCapabilitiesCodec.encode(advertisement),
+                    ContentType.Application.Json,
+                )
+            }
             post("/cluster/v1/execute") {
                 val peerFingerprint = peerFingerprint(call)
                 val expectedPeer = peerFingerprint?.let { pairedPeers()[it] }
@@ -259,6 +285,49 @@ class ClusterExecutionClient(
         }
     }
 
+    fun fetchCapabilities(endpoint: PeerEndpoint): ClusterCapabilityAdvertisement {
+        val connection = (URL(endpoint.toHttpsUrl("/cluster/v1/capabilities")).openConnection() as? HttpsURLConnection)
+            ?: throw ClusterTransportException(message = "cluster peer did not provide HTTPS")
+        connection.apply {
+            sslSocketFactory = sslContext.socketFactory
+            hostnameVerifier = this@ClusterExecutionClient.hostnameVerifier
+            connectTimeout = connectTimeoutMillis
+            readTimeout = readTimeoutMillis
+            requestMethod = "GET"
+            doInput = true
+            doOutput = false
+            useCaches = false
+            instanceFollowRedirects = false
+            setRequestProperty(HttpHeaders.Accept, ContentType.Application.Json.toString())
+        }
+        return try {
+            val status = connection.responseCode
+            if (status != HttpURLConnection.HTTP_OK) {
+                throw ClusterTransportException(
+                    httpStatus = status,
+                    message = "cluster peer rejected capability request",
+                )
+            }
+            val responseBody = readBounded(connection.inputStream, maxResponseBodyBytes)
+            runCatching { ClusterCapabilitiesCodec.decode(responseBody) }
+                .getOrElse { error ->
+                    throw ClusterTransportException(
+                        message = "cluster peer returned invalid capabilities",
+                        cause = error,
+                    )
+                }
+        } catch (error: ClusterTransportException) {
+            throw error
+        } catch (error: IOException) {
+            throw ClusterTransportException(
+                message = "cluster capability request failed",
+                cause = error,
+            )
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun readBounded(input: java.io.InputStream, maxBytes: Int): String {
         val output = ByteArrayOutputStream()
         val buffer = ByteArray(16 * 1024)
@@ -293,7 +362,7 @@ private suspend fun ApplicationCall.receiveBoundedText(maxBytes: Int): String {
     return bytes.toString(Charsets.UTF_8)
 }
 
-private fun PeerEndpoint.toHttpsUrl(): String {
+private fun PeerEndpoint.toHttpsUrl(path: String = "/cluster/v1/execute"): String {
     val formattedHost = if (host.contains(":") && !host.startsWith("[")) "[$host]" else host
-    return "https://$formattedHost:$port/cluster/v1/execute"
+    return "https://$formattedHost:$port$path"
 }

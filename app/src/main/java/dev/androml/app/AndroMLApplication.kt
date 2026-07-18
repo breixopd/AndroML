@@ -93,6 +93,9 @@ class AndroMLApplication : Application() {
             inferenceServiceClient = inferenceServiceClient,
             catalogRepository = catalogRepository,
             artifactStore = artifactStore,
+            deviceProfileProvider = {
+                AndroidDeviceProfileCollector(applicationContext).collect()
+            },
         )
     }
 
