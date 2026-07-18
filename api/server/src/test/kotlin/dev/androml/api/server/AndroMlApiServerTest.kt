@@ -2,6 +2,8 @@ package dev.androml.api.server
 
 import dev.androml.core.api.ApiKeyCodec
 import dev.androml.core.api.ApiScope
+import dev.androml.core.security.MtlsContextFactory
+import dev.androml.core.security.SelfSignedTlsIdentityFactory
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -12,9 +14,14 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import java.util.Collections
+import java.net.ServerSocket
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLException
+import java.net.URL
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -66,6 +73,87 @@ class AndroMlApiServerTest {
             throw AssertionError("expected LAN mTLS refusal")
         } catch (_: LanMtlsRequiredException) {
             // expected
+        }
+    }
+
+    @Test
+    fun lanServerServesHealthOverMutualTls() {
+        val serverIdentity = SelfSignedTlsIdentityFactory.generate("api-server-test")
+        val clientIdentity = SelfSignedTlsIdentityFactory.generate("api-client-test")
+        val unpairedIdentity = SelfSignedTlsIdentityFactory.generate("unpaired-client-test")
+        val generated = ApiKeyCodec.generate(
+            displayName = "lan-test",
+            scopes = setOf(ApiScope.ModelsRead),
+            nowEpochMillis = System.currentTimeMillis(),
+        )
+        val material = MtlsContextFactory.serverMaterial(
+            identity = serverIdentity,
+            trustedClientCertificates = listOf(clientIdentity.certificate),
+        )
+        val port = ServerSocket(0).use { it.localPort }
+        val server = AndroMlApiServer(
+            config = ApiServerConfig(
+                bindMode = dev.androml.core.api.BindMode.Lan,
+                host = "127.0.0.1",
+                port = port,
+            ),
+            apiKeys = { listOf(generated.record) },
+            models = { listOf("fake") },
+            inference = object : ApiInferenceGateway {
+                override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flowOf()
+            },
+            tlsMaterial = material,
+        )
+
+        server.start()
+        try {
+            val clientContext = MtlsContextFactory.clientContext(
+                identity = clientIdentity,
+                trustedServerCertificates = listOf(serverIdentity.certificate),
+            )
+            val connection = (URL("https://127.0.0.1:$port/healthz").openConnection() as HttpsURLConnection).apply {
+                sslSocketFactory = clientContext.socketFactory
+                connectTimeout = 5_000
+                readTimeout = 5_000
+            }
+            try {
+                assertEquals(HttpStatusCode.OK.value, connection.responseCode)
+            } finally {
+                connection.disconnect()
+            }
+
+            val modelsConnection = (URL("https://127.0.0.1:$port/v1/models").openConnection() as HttpsURLConnection).apply {
+                sslSocketFactory = clientContext.socketFactory
+                connectTimeout = 5_000
+                readTimeout = 5_000
+                setRequestProperty(HttpHeaders.Authorization, "Bearer ${generated.plaintextToken}")
+            }
+            try {
+                val status = modelsConnection.responseCode
+                val body = (if (status >= 400) modelsConnection.errorStream else modelsConnection.inputStream)
+                    ?.bufferedReader()
+                    ?.use { it.readText() }
+                assertEquals("status=$status body=$body", HttpStatusCode.OK.value, status)
+            } finally {
+                modelsConnection.disconnect()
+            }
+
+            val unpairedContext = MtlsContextFactory.clientContext(
+                identity = unpairedIdentity,
+                trustedServerCertificates = listOf(serverIdentity.certificate),
+            )
+            val unpairedConnection = (URL("https://127.0.0.1:$port/healthz").openConnection() as HttpsURLConnection).apply {
+                sslSocketFactory = unpairedContext.socketFactory
+                connectTimeout = 5_000
+                readTimeout = 5_000
+            }
+            try {
+                assertThrows(SSLException::class.java) { unpairedConnection.responseCode }
+            } finally {
+                unpairedConnection.disconnect()
+            }
+        } finally {
+            server.stop()
         }
     }
 }

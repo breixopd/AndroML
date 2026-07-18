@@ -8,6 +8,9 @@ import dev.androml.core.api.ApiRequestClass
 import dev.androml.core.api.ApiScope
 import dev.androml.core.api.ApiSecurityPolicy
 import dev.androml.core.api.BindMode
+import dev.androml.core.api.CertificateFingerprint
+import dev.androml.core.api.MtlsPeer
+import dev.androml.core.security.TlsServerMaterial
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -17,6 +20,7 @@ import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.engine.sslConnector
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.receiveText
@@ -26,6 +30,9 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.cio.CIO
+import io.ktor.server.netty.Netty
+import io.ktor.server.netty.NettyApplicationCall
+import io.ktor.server.routing.RoutingCall
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -43,6 +50,9 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.security.MessageDigest
+import java.security.cert.X509Certificate
+import io.netty.handler.ssl.SslHandler
 
 data class ApiServerConfig(
     val bindMode: BindMode = BindMode.Loopback,
@@ -167,17 +177,42 @@ class AndroMlApiServer(
     private val apiKeys: suspend () -> Collection<ApiKeyRecord>,
     private val models: suspend () -> List<String>,
     private val inference: ApiInferenceGateway,
-    private val securityPolicy: ApiSecurityPolicy = ApiSecurityPolicy(),
+    private val securityPolicy: ApiSecurityPolicy? = null,
     private val onKeyUsed: suspend (ApiKeyId) -> Unit = {},
+    private val tlsMaterial: TlsServerMaterial? = null,
 ) {
     private val authenticator = ApiKeyAuthenticator()
     private var engine: EmbeddedServer<*, *>? = null
+    private val effectiveSecurityPolicy: ApiSecurityPolicy by lazy {
+        securityPolicy ?: ApiSecurityPolicy(tlsMaterial?.trustedClientFingerprints.orEmpty())
+    }
 
     fun start(wait: Boolean = false) {
         check(engine == null) { "API server is already running" }
-        if (config.bindMode == BindMode.Lan) throw LanMtlsRequiredException()
-        engine = embeddedServer(CIO, host = config.host, port = config.port) {
-            module()
+        engine = if (config.bindMode == BindMode.Lan) {
+            val material = tlsMaterial ?: throw LanMtlsRequiredException()
+            embeddedServer(
+                Netty,
+                configure = {
+                    sslConnector(
+                        keyStore = material.keyStore,
+                        keyAlias = material.keyAlias,
+                        keyStorePassword = material::keyStorePassword,
+                        privateKeyPassword = material::privateKeyPassword,
+                    ) {
+                        host = config.host
+                        port = config.port
+                        trustStore = material.trustStore
+                        enabledProtocols = listOf("TLSv1.3", "TLSv1.2")
+                    }
+                },
+            ) {
+                module()
+            }
+        } else {
+            embeddedServer(CIO, host = config.host, port = config.port) {
+                module()
+            }
         }.also { it.start(wait = wait) }
     }
 
@@ -258,13 +293,39 @@ class AndroMlApiServer(
         val auth: ApiAuthResult? = token?.let {
             authenticator.authenticate(it, apiKeys(), scope)
         }
-        val decision = securityPolicy.evaluate(config.bindMode, requestClass, peer = null, apiAuth = auth)
+        val peer = if (config.bindMode == BindMode.Lan) peerFrom(call) else null
+        val decision = effectiveSecurityPolicy.evaluate(config.bindMode, requestClass, peer = peer, apiAuth = auth)
         if (!decision.allowed) {
             call.respondText("{\"error\":\"${decision.reason}\"}", status = HttpStatusCode.Unauthorized)
             return false
         }
         auth?.let { onKeyUsed(it.record.id) }
         return true
+    }
+
+    private fun peerFrom(call: ApplicationCall): MtlsPeer? {
+        val engineCall = unwrapEngineCall(call)
+        val nettyCall = engineCall as? NettyApplicationCall ?: return null
+        val pipeline = nettyCall.context.pipeline()
+        val sslHandler = pipeline.get(SslHandler::class.java) ?: return null
+        val certificate = runCatching {
+            sslHandler.engine().session.peerCertificates.firstOrNull() as? X509Certificate
+        }.getOrNull() ?: return null
+        val fingerprint = CertificateFingerprint.parse(
+            MessageDigest.getInstance("SHA-256")
+                .digest(certificate.encoded)
+                .joinToString("") { byte -> "%02x".format(byte) },
+        )
+        return MtlsPeer(
+            fingerprint = fingerprint,
+            displayName = certificate.subjectX500Principal.name.take(128).ifBlank { "mTLS client" },
+            expiresAtEpochMillis = certificate.notAfter.time,
+        )
+    }
+
+    private tailrec fun unwrapEngineCall(call: ApplicationCall): ApplicationCall = when (call) {
+        is RoutingCall -> unwrapEngineCall(call.pipelineCall.engineCall)
+        else -> call
     }
 }
 

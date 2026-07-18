@@ -118,6 +118,20 @@ object SelfSignedTlsIdentityFactory {
             .joinToString("") { byte -> "%02x".format(byte) }
 }
 
+/** In-memory key/trust stores for a Ktor server TLS connector. */
+class TlsServerMaterial internal constructor(
+    val keyStore: java.security.KeyStore,
+    val trustStore: java.security.KeyStore,
+    val keyAlias: String,
+    val trustedClientFingerprints: Set<CertificateFingerprint>,
+    private val keyStorePassword: CharArray,
+    private val privateKeyPassword: CharArray,
+) {
+    fun keyStorePassword(): CharArray = keyStorePassword.copyOf()
+
+    fun privateKeyPassword(): CharArray = privateKeyPassword.copyOf()
+}
+
 object MtlsContextFactory {
     private const val KEY_STORE_PASSWORD = "androml-in-memory"
     private const val KEY_ALIAS = "identity"
@@ -126,6 +140,23 @@ object MtlsContextFactory {
         identity: TlsIdentity,
         trustedClientCertificates: Collection<X509Certificate>,
     ): SSLContext = createContext(identity, trustedClientCertificates)
+
+    fun serverMaterial(
+        identity: TlsIdentity,
+        trustedClientCertificates: Collection<X509Certificate>,
+    ): TlsServerMaterial {
+        require(trustedClientCertificates.isNotEmpty()) { "mTLS context requires at least one trusted peer" }
+        return TlsServerMaterial(
+            keyStore = createKeyStore(identity),
+            trustStore = createTrustStore(trustedClientCertificates),
+            keyAlias = KEY_ALIAS,
+            trustedClientFingerprints = trustedClientCertificates
+                .map { CertificateFingerprint.parse(certificateFingerprint(it)) }
+                .toSet(),
+            keyStorePassword = KEY_STORE_PASSWORD.toCharArray(),
+            privateKeyPassword = KEY_STORE_PASSWORD.toCharArray(),
+        )
+    }
 
     fun clientContext(
         identity: TlsIdentity,
@@ -137,21 +168,8 @@ object MtlsContextFactory {
         trustedCertificates: Collection<X509Certificate>,
     ): SSLContext {
         require(trustedCertificates.isNotEmpty()) { "mTLS context requires at least one trusted peer" }
-        val keyStore = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType()).apply {
-            load(null, null)
-            setKeyEntry(
-                KEY_ALIAS,
-                identity.privateKey,
-                KEY_STORE_PASSWORD.toCharArray(),
-                arrayOf(identity.certificate),
-            )
-        }
-        val trustStore = java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType()).apply {
-            load(null, null)
-            trustedCertificates.distinctBy { certificateFingerprint(it) }.forEach { certificate ->
-                setCertificateEntry("peer-${certificateFingerprint(certificate).take(24)}", certificate)
-            }
-        }
+        val keyStore = createKeyStore(identity)
+        val trustStore = createTrustStore(trustedCertificates)
         val keyManagers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply {
             init(keyStore, KEY_STORE_PASSWORD.toCharArray())
         }.keyManagers
@@ -164,6 +182,27 @@ object MtlsContextFactory {
             init(keyManagers, arrayOf(PinnedTrustManager(trustManager)), SecureRandom())
         }
     }
+
+    private fun createKeyStore(identity: TlsIdentity): java.security.KeyStore =
+        java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType()).apply {
+            load(null, null)
+            setKeyEntry(
+                KEY_ALIAS,
+                identity.privateKey,
+                KEY_STORE_PASSWORD.toCharArray(),
+                arrayOf(identity.certificate),
+            )
+        }
+
+    private fun createTrustStore(
+        trustedCertificates: Collection<X509Certificate>,
+    ): java.security.KeyStore =
+        java.security.KeyStore.getInstance(java.security.KeyStore.getDefaultType()).apply {
+            load(null, null)
+            trustedCertificates.distinctBy { certificateFingerprint(it) }.forEach { certificate ->
+                setCertificateEntry("peer-${certificateFingerprint(certificate).take(24)}", certificate)
+            }
+        }
 
     private fun certificateFingerprint(certificate: X509Certificate): String =
         MessageDigest.getInstance("SHA-256")
