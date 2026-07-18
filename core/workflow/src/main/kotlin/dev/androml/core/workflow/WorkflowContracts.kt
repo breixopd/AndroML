@@ -402,6 +402,16 @@ interface WorkflowEventStore {
     fun read(runId: RunId): List<StoredWorkflowEvent>
 }
 
+interface DurableWorkflowEventStore {
+    suspend fun append(
+        runId: RunId,
+        expectedSequence: Long,
+        events: List<WorkflowEvent>,
+    ): List<StoredWorkflowEvent>
+
+    suspend fun read(runId: RunId): List<StoredWorkflowEvent>
+}
+
 class InMemoryWorkflowEventStore : WorkflowEventStore {
     private val events = mutableMapOf<RunId, MutableList<StoredWorkflowEvent>>()
 
@@ -414,7 +424,9 @@ class InMemoryWorkflowEventStore : WorkflowEventStore {
         require(events.all { it.runId == runId }) { "event run IDs do not match" }
         val stream = this.events.getOrPut(runId) { mutableListOf() }
         val existingKeys = stream.mapTo(mutableSetOf()) { it.event.idempotencyKey }
-        val newEvents = events.filterNot { it.idempotencyKey in existingKeys }
+        val newEvents = events
+            .filterNot { it.idempotencyKey in existingKeys }
+            .distinctBy(WorkflowEvent::idempotencyKey)
         if (stream.size.toLong() != expectedSequence && newEvents.isNotEmpty()) {
             throw WorkflowConcurrencyException("workflow event sequence changed")
         }

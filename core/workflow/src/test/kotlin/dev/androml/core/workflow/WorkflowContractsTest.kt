@@ -121,4 +121,14 @@ class WorkflowContractsTest {
             // expected
         }
     }
+
+    @Test
+    fun duplicateIdempotencyKeysWithinOneAppendAreStoredOnce() {
+        val run = RunId.parse("run-duplicates")
+        val event = WorkflowEvent.StatusChanged(run, "same", WorkflowRunStatus.Running)
+        val store = InMemoryWorkflowEventStore()
+
+        assertEquals(1, store.append(run, 0L, listOf(event, event)).size)
+        assertEquals(1, store.read(run).size)
+    }
 }
