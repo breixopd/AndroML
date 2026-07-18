@@ -78,10 +78,13 @@ android {
 
 dependencies {
     implementation(project(":core:model"))
+    implementation(project(":core:files"))
     implementation(project(":core:device"))
     implementation(project(":core:network"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.okhttp)
 
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
