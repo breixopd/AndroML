@@ -100,6 +100,7 @@ dependencies {
     implementation(project(":api:server"))
     implementation(project(":runtime:api"))
     implementation(project(":runtime:service"))
+    implementation(project(":optimizer"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.android)

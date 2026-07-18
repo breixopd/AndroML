@@ -68,6 +68,8 @@ import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
+import dev.androml.runtime.api.FakeRuntimeAdapter
+import dev.androml.optimizer.AutoOptimizer
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -201,6 +203,18 @@ private fun PlaygroundScreen(
     var isRunning by remember { mutableStateOf(false) }
     var runJob by remember { mutableStateOf<Job?>(null) }
     val scope = rememberCoroutineScope()
+    val optimizer = remember { AutoOptimizer() }
+    val optimization = remember(deviceProfile) {
+        optimizer.select(
+            device = deviceProfile,
+            model = ModelRequirements(
+                workload = ModelWorkload.TextGeneration,
+                weightBytes = 1L,
+                contextTokens = 2048,
+            ),
+            runtimes = listOf(FakeRuntimeAdapter().descriptor),
+        )
+    }
 
     LaunchedEffect(serviceClient) {
         status = try {
@@ -234,12 +248,13 @@ private fun PlaygroundScreen(
                         contextTokens = 2048,
                     ),
                     configuration = RuntimeConfiguration(
-                        cpuThreads = deviceProfile.cpuCoreCount.coerceIn(1, 8),
+                        cpuThreads = optimization.configuration?.cpuThreads
+                            ?: deviceProfile.cpuCoreCount.coerceIn(1, 8),
                         contextTokens = 2048,
-                        useAcceleration = false,
+                        useAcceleration = optimization.configuration?.useAcceleration ?: false,
                     ),
                 )
-                status = "Streaming from ${session.runtimeId.value} in :inference"
+                status = "Auto-picked ${session.runtimeId.value} · ${optimization.configuration?.cpuThreads ?: 1} CPU threads in :inference"
                 val request = InferenceRequest(
                     id = InferenceRequestId.parse("ui-${System.nanoTime()}"),
                     prompt = prompt,
@@ -287,6 +302,13 @@ private fun PlaygroundScreen(
                     Spacer(Modifier.height(6.dp))
                     Text("$status\nNetwork access is absent from the runtime-service module.")
                     Spacer(Modifier.height(8.dp))
+                    Text(
+                        optimization.selected?.let { candidate ->
+                            "Auto-pick: ${candidate.descriptor.id.value} · ${candidate.descriptor.acceleration.name.lowercase(Locale.ROOT)} · score ${"%.1f".format(Locale.ROOT, candidate.score ?: 0.0)}"
+                        } ?: "Auto-pick: no compatible runtime can be proven on this device",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
                     AssistChip(onClick = {}, label = { Text("Fake adapter · test only") })
                 }
             }
@@ -304,8 +326,18 @@ private fun PlaygroundScreen(
                         minLines = 3,
                     )
                     Spacer(Modifier.height(8.dp))
-                    Button(onClick = ::runPrompt, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (isRunning) "Stop" else "Run in isolated process")
+                    Button(
+                        onClick = ::runPrompt,
+                        enabled = isRunning || optimization.selected != null,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            when {
+                                isRunning -> "Stop"
+                                optimization.selected == null -> "No compatible runtime"
+                                else -> "Run with auto-optimisation"
+                            },
+                        )
                     }
                 }
             }
