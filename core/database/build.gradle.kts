@@ -21,6 +21,7 @@ dependencies {
     implementation(project(":core:rag"))
     implementation(project(":core:api"))
     implementation(project(":core:workflow"))
+    implementation(project(":cluster:core"))
     api(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)

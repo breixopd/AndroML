@@ -2,6 +2,7 @@ package dev.androml.cluster.core
 
 import dev.androml.core.api.CertificateFingerprint
 import dev.androml.core.rag.RetrievalResult
+import java.security.MessageDigest
 import java.time.Instant
 
 @JvmInline
@@ -99,6 +100,25 @@ data class ClusterPeer(
         require(certificateExpiresAtEpochMillis > pairedAtEpochMillis) {
             "certificate expiry must be after pairing"
         }
+    }
+}
+
+/** Public certificate material persisted alongside a paired peer's metadata. */
+data class StoredClusterPeer(
+    val peer: ClusterPeer,
+    val certificateDer: ByteArray,
+) {
+    init {
+        require(certificateDer.size in 1..MAX_CERTIFICATE_BYTES) {
+            "peer certificate bytes are out of bounds"
+        }
+        require(CertificateFingerprint.parse(sha256(certificateDer)) == peer.fingerprint) {
+            "peer certificate does not match its fingerprint"
+        }
+    }
+
+    private companion object {
+        const val MAX_CERTIFICATE_BYTES = 16 * 1024
     }
 }
 
@@ -292,3 +312,8 @@ class DistributedRagMerger {
             .take(topK)
     }
 }
+
+private fun sha256(value: ByteArray): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(value)
+        .joinToString("") { byte -> "%02x".format(byte) }

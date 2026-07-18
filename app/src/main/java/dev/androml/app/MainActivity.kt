@@ -104,7 +104,7 @@ private fun AndroMLTheme(content: @Composable () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AndroMLApp() {
-    val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "API", "More")
+    val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "API", "Cluster")
     var selectedDestination by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val application = context.applicationContext as AndroMLApplication
@@ -120,6 +120,7 @@ private fun AndroMLApp() {
     val apiController = application.apiController
     val apiKeyRepository = application.apiKeyRepository
     val ragRepository = application.ragRepository
+    val clusterPeerRepository = application.clusterPeerRepository
 
     Scaffold(
         topBar = {
@@ -191,9 +192,10 @@ private fun AndroMLApp() {
                 tlsIdentityStore = application.apiTlsIdentityStore,
             )
         } else {
-            PlaceholderDestination(
-                name = destinations[selectedDestination],
+            ClusterScreen(
                 modifier = Modifier.padding(paddingValues),
+                repository = clusterPeerRepository,
+                tlsIdentityStore = application.clusterTlsIdentityStore,
             )
         }
     }

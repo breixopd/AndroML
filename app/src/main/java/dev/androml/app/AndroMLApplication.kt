@@ -8,6 +8,7 @@ import dev.androml.api.server.ChatCompletionRequest
 import dev.androml.api.server.ChatDelta
 import dev.androml.core.database.ApiKeyRepository
 import dev.androml.core.database.AndroMlDatabase
+import dev.androml.core.database.ClusterPeerRepository
 import dev.androml.core.database.ModelCatalogRepository
 import dev.androml.core.database.RagRepository
 import dev.androml.core.device.AndroidDeviceProfileCollector
@@ -69,7 +70,15 @@ class AndroMLApplication : Application() {
         ApiKeyRepository(catalogDatabase.apiKeyDao())
     }
 
+    val clusterPeerRepository: ClusterPeerRepository by lazy {
+        ClusterPeerRepository(catalogDatabase.clusterPeerDao())
+    }
+
     val apiTlsIdentityStore: TlsIdentityStore by lazy {
+        TlsIdentityStore(secretStore)
+    }
+
+    val clusterTlsIdentityStore: TlsIdentityStore by lazy {
         TlsIdentityStore(secretStore)
     }
 

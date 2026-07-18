@@ -18,8 +18,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ApiKeyEntity::class,
         WorkflowEventEntity::class,
         WorkflowCheckpointEntity::class,
+        ClusterPeerEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
@@ -32,6 +33,8 @@ abstract class AndroMlDatabase : RoomDatabase() {
     abstract fun workflowEventDao(): WorkflowEventDao
 
     abstract fun workflowCheckpointDao(): WorkflowCheckpointDao
+
+    abstract fun clusterPeerDao(): ClusterPeerDao
 
     companion object {
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
@@ -159,10 +162,48 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cluster_peers (
+                        peerId TEXT NOT NULL PRIMARY KEY,
+                        fingerprint TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        host TEXT NOT NULL,
+                        port INTEGER NOT NULL,
+                        pairedAtEpochMillis INTEGER NOT NULL,
+                        certificateExpiresAtEpochMillis INTEGER NOT NULL,
+                        paired INTEGER NOT NULL,
+                        revoked INTEGER NOT NULL,
+                        certificateDer BLOB NOT NULL,
+                        protocolMajor INTEGER NOT NULL,
+                        protocolMinor INTEGER NOT NULL,
+                        supportedWorkloads TEXT NOT NULL,
+                        modelHashes TEXT NOT NULL,
+                        maxConcurrentJobs INTEGER NOT NULL,
+                        availableRamBytes INTEGER NOT NULL,
+                        queueDepth INTEGER NOT NULL,
+                        thermalSeverity INTEGER NOT NULL,
+                        batteryPercent INTEGER NOT NULL,
+                        charging INTEGER NOT NULL,
+                        lastSeenEpochMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
             "androml.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
+        ).addMigrations(
+            MIGRATION_1_2,
+            MIGRATION_2_3,
+            MIGRATION_3_4,
+            MIGRATION_4_5,
+            MIGRATION_5_6,
+        ).build()
     }
 }

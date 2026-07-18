@@ -150,6 +150,28 @@ class ClusterContractsTest {
         assertThrows(IllegalArgumentException::class.java) { ClusterWireCodec.decodeRequest(tampered) }
     }
 
+    @Test
+    fun storedPeerCertificateMustMatchItsFingerprint() {
+        val certificate = "public certificate bytes".toByteArray()
+        val peer = node(
+            id = "stored-peer",
+            availableRamBytes = 4_000L,
+            queueDepth = 0,
+            now = 60_000L,
+        ).peer.copy(
+            fingerprint = CertificateFingerprint.parse(
+                java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(certificate)
+                    .joinToString("") { byte -> "%02x".format(byte) },
+            ),
+        )
+
+        StoredClusterPeer(peer, certificate)
+        assertThrows(IllegalArgumentException::class.java) {
+            StoredClusterPeer(peer, "tampered".toByteArray())
+        }
+    }
+
     private fun executionRequest(
         payload: ByteArray,
         deadline: Long = 70_000L,
