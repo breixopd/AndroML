@@ -1,22 +1,32 @@
-name: GitHub Release (private phone test)
+name: GitHub Release recovery (private phone test)
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing GitHub Release tag to rebuild and re-upload
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   STORE_SUBMISSIONS_ENABLED: 'false'
+  RELEASE_TAG: ${{ inputs.tag_name }}
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate release tag input
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
       - name: Checkout tagged source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.tag_name }}
 
       - name: Set up JDK
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
@@ -28,7 +38,7 @@ jobs:
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
 
       - name: Block store publication during phone test
         run: test "$STORE_SUBMISSIONS_ENABLED" = 'false'
@@ -49,6 +59,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ac638b010cf58a27ee6c972d7336334ccaf61c96 # v4.4.1
 
+      - name: Verify tagged source
+        run: ./scripts/verify-all.sh --ci
+
       - name: Build OSS release APK
         env:
           ANDROML_RELEASE_KEYSTORE: ${{ runner.temp }}/androml-test-release.jks
@@ -58,17 +71,24 @@ jobs:
         run: ./gradlew :app:assembleOssRelease --no-daemon --console=plain
 
       - name: Package and verify test artifact
-        run: ./scripts/package-test-release.sh "${GITHUB_REF_NAME#v}"
+        run: |
+          ./scripts/verify-release-config.sh
+          ./scripts/package-test-release.sh "${RELEASE_TAG#v}"
 
       - name: Assert release contains only GitHub test artifacts
         run: |
           test "$STORE_SUBMISSIONS_ENABLED" = 'false'
-          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -eq 3
+          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -eq 4
 
-      - name: Publish GitHub Release
+      - name: Confirm existing GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: gh release view "$RELEASE_TAG" --json tagName --jq '.tagName' | grep -Fx "$RELEASE_TAG"
+
+      - name: Upload verified assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/test-release/* \
-            --title "AndroML ${GITHUB_REF_NAME#v} (private phone test)" \
-            --notes-file CHANGELOG.md
+          gh release upload "$RELEASE_TAG" dist/test-release/* --clobber

@@ -28,7 +28,7 @@ jobs:
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
 
       - name: Assert test-period release policy
         run: test "$STORE_SUBMISSIONS_ENABLED" = 'false'
@@ -36,8 +36,11 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ac638b010cf58a27ee6c972d7336334ccaf61c96 # v4.4.1
 
-      - name: Verify code
-        run: ./gradlew :core:model:test :core:files:test :core:network:test :runtime:api:test :optimizer:test :app:testOssDebugUnitTest :app:lintOssDebug :app:assembleOssDebug --no-daemon --console=plain
+      - name: Verify release configuration
+        run: ./scripts/verify-release-config.sh
+
+      - name: Verify code and OSS debug build
+        run: ./scripts/verify-all.sh --ci
 
       - name: Upload debug APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

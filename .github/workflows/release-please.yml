@@ -44,7 +44,7 @@ jobs:
 
       - name: Install Android SDK packages
         if: steps.release.outputs.release_created == 'true'
-        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
 
       - name: Require test-release signing inputs
         if: steps.release.outputs.release_created == 'true'
@@ -64,6 +64,10 @@ jobs:
         if: steps.release.outputs.release_created == 'true'
         uses: gradle/actions/setup-gradle@ac638b010cf58a27ee6c972d7336334ccaf61c96 # v4.4.1
 
+      - name: Verify released source
+        if: steps.release.outputs.release_created == 'true'
+        run: ./scripts/verify-all.sh --ci
+
       - name: Build OSS test release APK
         if: steps.release.outputs.release_created == 'true'
         env:
@@ -79,9 +83,15 @@ jobs:
           version="${{ steps.release.outputs.tag_name }}"
           ./scripts/package-test-release.sh "${version#v}"
           test "$STORE_SUBMISSIONS_ENABLED" = 'false'
-          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -eq 3
+          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -eq 4
 
-      - name: Upload APK and checksums to GitHub Release
+      - name: Confirm GitHub release exists
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "${{ steps.release.outputs.tag_name }}" --json tagName --jq '.tagName' | grep -Fx "${{ steps.release.outputs.tag_name }}"
+
+      - name: Upload verified assets to GitHub Release
         if: steps.release.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}

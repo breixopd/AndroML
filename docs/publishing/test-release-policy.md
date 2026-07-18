@@ -8,6 +8,7 @@ Only the signed OSS APK attached to a GitHub Release may be distributed. A relea
 
 - `androml-oss-universal-v<semver>.apk`.
 - SHA-256 and SHA-512 checksum files.
+- A JSON manifest containing the source commit, package ID, and signing-certificate digest.
 - The release changelog.
 - The source tag and commit identifier.
 - The expected package ID `dev.androml.app` and signing certificate fingerprint.
@@ -32,5 +33,7 @@ The app’s `ReleasePolicy.testPeriod()` permits only `ReleaseChannel.GitHubRele
 3. Exercise the current Home screen and policy behavior.
 4. For a shareable test build, create a signed `v<semver>` tag and let GitHub Actions publish only the OSS APK.
 5. Verify the downloaded APK’s package ID, certificate, checksum, and version before installing it.
+
+Release Please creates the changelog-backed GitHub release and builds its assets in the same workflow run. A manual recovery workflow can rebuild and re-upload assets for an existing release if a runner or signing step fails.
 
 No model, document, prompt, certificate, API key, signing key, or personal diagnostic data may be attached to a GitHub Release.

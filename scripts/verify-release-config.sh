@@ -33,4 +33,5 @@ fi
 
 test -x scripts/package-test-release.sh
 test -x scripts/verify-test-release.sh
+test -x scripts/verify-all.sh
 printf 'release_config_ok=%s\n' "$version"
