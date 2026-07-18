@@ -9,6 +9,8 @@ import dev.androml.core.rag.RetrievalResult
 import dev.androml.core.rag.SourceSpan
 import dev.androml.core.rag.TextChunk
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -83,6 +85,94 @@ class ClusterContractsTest {
         assertEquals(listOf("node-a", "node-b"), merged.map { it.nodeId.value })
         assertEquals(CollectionId.parse("docs"), merged.first().result.chunk.collectionId)
     }
+
+    @Test
+    fun executionWireRoundTripsAndBindsPayloadToDeclaredHash() {
+        val payload = "prompt from node-a".toByteArray()
+        val request = executionRequest(payload)
+
+        val encoded = ClusterWireCodec.encodeRequest(request)
+        val decoded = ClusterWireCodec.decodeRequest(encoded)
+
+        assertEquals(request.sourcePeerId, decoded.sourcePeerId)
+        assertEquals(request.request, decoded.request)
+        assertArrayEquals(payload, decoded.payload)
+    }
+
+    @Test
+    fun idempotentExecutorRunsCompletedAttemptOnce() {
+        val ledger = InMemoryClusterJobLedger()
+        var executions = 0
+        val executor = IdempotentClusterExecutor(
+            ledger = ledger,
+            nowEpochMillis = { 60_000L },
+            handler = ClusterExecutionHandler {
+                executions += 1
+                "result".toByteArray()
+            },
+        )
+        val request = executionRequest("payload".toByteArray())
+
+        val first = executor.execute(request)
+        val second = executor.execute(request)
+
+        assertEquals(ClusterExecutionStatus.Completed, first.status)
+        assertEquals(ClusterExecutionStatus.AlreadyCompleted, second.status)
+        assertEquals(first.outputHash, second.outputHash)
+        assertEquals(1, executions)
+    }
+
+    @Test
+    fun expiredExecutionIsRejectedBeforeTheHandlerRuns() {
+        var executions = 0
+        val executor = IdempotentClusterExecutor(
+            ledger = InMemoryClusterJobLedger(),
+            nowEpochMillis = { 70_000L },
+            handler = ClusterExecutionHandler {
+                executions += 1
+                byteArrayOf(1)
+            },
+        )
+        val request = executionRequest("payload".toByteArray(), deadline = 70_000L)
+
+        val response = executor.execute(request)
+
+        assertEquals(ClusterExecutionStatus.Rejected, response.status)
+        assertEquals(0, executions)
+    }
+
+    @Test
+    fun executionWireRejectsPayloadHashMismatch() {
+        val request = executionRequest("payload".toByteArray())
+        val tampered = ClusterWireCodec.encodeRequest(request)
+            .replace(request.request.payloadHash.value, "f".repeat(64))
+
+        assertThrows(IllegalArgumentException::class.java) { ClusterWireCodec.decodeRequest(tampered) }
+    }
+
+    private fun executionRequest(
+        payload: ByteArray,
+        deadline: Long = 70_000L,
+    ): ClusterExecutionRequest = ClusterExecutionRequest(
+        sourcePeerId = PeerId.parse("node-a"),
+        request = ClusterRequest(
+            jobId = ClusterJobId.parse("job-1"),
+            attempt = 1,
+            workload = ClusterWorkload.InferenceReplica,
+            modelKey = "model-a",
+            modelHash = ContentHash.parse("c".repeat(64)),
+            requiredRamBytes = 2_000L,
+            deadlineEpochMillis = deadline,
+            payloadHash = ContentHash.parse(sha256(payload)),
+            idempotencyKey = "job-1:1",
+        ),
+        payload = payload,
+    )
+
+    private fun sha256(value: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(value)
+            .joinToString("") { byte -> "%02x".format(byte) }
 
     private fun inferenceRequest(now: Long): ClusterRequest = ClusterRequest(
         jobId = ClusterJobId.parse("job-1"),

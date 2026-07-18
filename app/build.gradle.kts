@@ -100,6 +100,7 @@ dependencies {
     implementation(project(":core:device"))
     implementation(project(":core:network"))
     implementation(project(":api:server"))
+    implementation(project(":cluster:transport"))
     implementation(project(":runtime:api"))
     implementation(project(":runtime:litertlm"))
     implementation(project(":runtime:service"))

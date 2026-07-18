@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.androml.cluster.core"
+    namespace = "dev.androml.cluster.transport"
     compileSdk = 37
 
     defaultConfig {
@@ -16,8 +16,10 @@ android {
 }
 
 dependencies {
+    implementation(project(":cluster:core"))
     implementation(project(":core:api"))
-    implementation(project(":core:rag"))
-    implementation(libs.kotlinx.serialization.json)
+    implementation(project(":core:security"))
+    implementation(libs.ktor.server.core)
+    implementation(libs.ktor.server.netty)
     testImplementation(libs.junit)
 }
