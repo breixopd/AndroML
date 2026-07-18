@@ -65,7 +65,7 @@ class HuggingFaceModelClient(
 
         response.use {
             if (!response.isSuccessful) {
-                throw responseException(response.code, response.header("Retry-After"))
+                throw huggingFaceResponseException(response.code, response.header("Retry-After"))
             }
 
             val body = response.body
@@ -112,28 +112,31 @@ class HuggingFaceModelClient(
         return output.toByteArray().toString(Charsets.UTF_8)
     }
 
-    private fun responseException(status: Int, retryAfterHeader: String?): HuggingFaceNetworkException {
-        val error = when (status) {
-            401 -> HuggingFaceNetworkError.Unauthorized
-            403 -> HuggingFaceNetworkError.Forbidden
-            404 -> HuggingFaceNetworkError.NotFound
-            429 -> HuggingFaceNetworkError.RateLimited
-            in 500..599 -> HuggingFaceNetworkError.Server
-            else -> HuggingFaceNetworkError.UnexpectedStatus
-        }
-        return HuggingFaceNetworkException(
-            code = error,
-            message = "Hugging Face request failed with HTTP $status",
-            httpStatus = status,
-            retryAfterSeconds = retryAfterHeader
-                ?.toLongOrNull()
-                ?.takeIf { it >= 0 },
-        )
-    }
-
     private companion object {
         const val MAX_METADATA_RESPONSE_BYTES = 2L * 1024L * 1024L
         const val INITIAL_BUFFER_BYTES = 8 * 1024
         const val READ_BUFFER_BYTES = 16 * 1024
     }
+}
+
+internal fun huggingFaceResponseException(
+    status: Int,
+    retryAfterHeader: String?,
+): HuggingFaceNetworkException {
+    val error = when (status) {
+        401 -> HuggingFaceNetworkError.Unauthorized
+        403 -> HuggingFaceNetworkError.Forbidden
+        404 -> HuggingFaceNetworkError.NotFound
+        429 -> HuggingFaceNetworkError.RateLimited
+        in 500..599 -> HuggingFaceNetworkError.Server
+        else -> HuggingFaceNetworkError.UnexpectedStatus
+    }
+    return HuggingFaceNetworkException(
+        code = error,
+        message = "Hugging Face request failed with HTTP $status",
+        httpStatus = status,
+        retryAfterSeconds = retryAfterHeader
+            ?.toLongOrNull()
+            ?.takeIf { it >= 0 },
+    )
 }

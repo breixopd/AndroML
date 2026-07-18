@@ -17,6 +17,7 @@ android {
 
 dependencies {
     implementation(project(":core:model"))
+    implementation(project(":core:files"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     testImplementation(libs.junit)
