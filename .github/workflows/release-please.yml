@@ -1,12 +1,12 @@
-name: GitHub Release (private phone test)
+name: Release Please (GitHub phone-test releases)
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches: [main]
 
 permissions:
   contents: write
+  pull-requests: write
 
 env:
   STORE_SUBMISSIONS_ENABLED: 'false'
@@ -15,25 +15,39 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout tagged source
+      - name: Assert test-period release policy
+        run: test "$STORE_SUBMISSIONS_ENABLED" = 'false'
+
+      - name: Create or update release PR
+        id: release
+        uses: googleapis/release-please-action@c2a5a2bd6a758a0937f1ddb1e8950609867ed15c # v4.3.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Checkout released source
+        if: steps.release.outputs.release_created == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.release.outputs.tag_name }}
 
       - name: Set up JDK
+        if: steps.release.outputs.release_created == 'true'
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Android SDK
+        if: steps.release.outputs.release_created == 'true'
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
 
       - name: Install Android SDK packages
+        if: steps.release.outputs.release_created == 'true'
         run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
 
-      - name: Block store publication during phone test
-        run: test "$STORE_SUBMISSIONS_ENABLED" = 'false'
-
       - name: Require test-release signing inputs
+        if: steps.release.outputs.release_created == 'true'
         env:
           ANDROML_RELEASE_KEYSTORE_B64: ${{ secrets.ANDROML_RELEASE_KEYSTORE_B64 }}
           ANDROML_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROML_RELEASE_STORE_PASSWORD }}
@@ -47,9 +61,11 @@ jobs:
           printf '%s' "$ANDROML_RELEASE_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/androml-test-release.jks"
 
       - name: Set up Gradle
+        if: steps.release.outputs.release_created == 'true'
         uses: gradle/actions/setup-gradle@ac638b010cf58a27ee6c972d7336334ccaf61c96 # v4.4.1
 
-      - name: Build OSS release APK
+      - name: Build OSS test release APK
+        if: steps.release.outputs.release_created == 'true'
         env:
           ANDROML_RELEASE_KEYSTORE: ${{ runner.temp }}/androml-test-release.jks
           ANDROML_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROML_RELEASE_STORE_PASSWORD }}
@@ -58,17 +74,15 @@ jobs:
         run: ./gradlew :app:assembleOssRelease --no-daemon --console=plain
 
       - name: Package and verify test artifact
-        run: ./scripts/package-test-release.sh "${GITHUB_REF_NAME#v}"
-
-      - name: Assert release contains only GitHub test artifacts
+        if: steps.release.outputs.release_created == 'true'
         run: |
+          version="${{ steps.release.outputs.tag_name }}"
+          ./scripts/package-test-release.sh "${version#v}"
           test "$STORE_SUBMISSIONS_ENABLED" = 'false'
           test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -eq 3
 
-      - name: Publish GitHub Release
+      - name: Upload APK and checksums to GitHub Release
+        if: steps.release.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" dist/test-release/* \
-            --title "AndroML ${GITHUB_REF_NAME#v} (private phone test)" \
-            --notes-file CHANGELOG.md
+        run: gh release upload "${{ steps.release.outputs.tag_name }}" dist/test-release/* --clobber

@@ -3,6 +3,18 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
+val appVersion = rootProject.file("VERSION").readText().trim()
+val appVersionParts = appVersion.split('.')
+require(appVersionParts.size == 3 && appVersionParts.all { it.toIntOrNull() != null }) {
+    "VERSION must contain a numeric MAJOR.MINOR.PATCH value"
+}
+val appVersionCode = appVersionParts[0].toLong() * 1_000_000L +
+    appVersionParts[1].toLong() * 1_000L +
+    appVersionParts[2].toLong()
+require(appVersionCode in 1..2_100_000_000L) {
+    "VERSION produces an invalid Android versionCode: $appVersionCode"
+}
+
 android {
     namespace = "dev.androml.app"
     compileSdk = 37
@@ -16,8 +28,8 @@ android {
         applicationId = "dev.androml.app"
         minSdk = 29
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode.toInt()
+        versionName = appVersion
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true

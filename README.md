@@ -43,9 +43,10 @@ export ANDROML_RELEASE_KEY_PASSWORD='provided-by-secret-manager'
 
 Tags matching `v*` build and publish only the OSS APK to a GitHub Release. The workflow has no store upload step and asserts `STORE_SUBMISSIONS_ENABLED=false`. Store publication requires a deliberate code review and a separate owner approval after the phone-testing period.
 
+Merges to `main` run Release Please. It opens or updates a release PR from Conventional Commits; merging that PR creates the GitHub tag/release and attaches the verified OSS APK plus SHA-256/SHA-512 checksums. A signing key must be supplied through protected GitHub secrets, and the workflow remains hard-blocked from store publication.
+
 See [the test-release policy](docs/publishing/test-release-policy.md) for the exact gate and artifact verification rules.
 
 ## License
 
 AndroML-owned code is Apache-2.0. Model files, runtime libraries, and third-party assets retain their own licenses, which the app will display before use.
-
