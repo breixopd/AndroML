@@ -183,6 +183,7 @@ private fun AndroMLApp() {
                 modifier = Modifier.padding(paddingValues),
                 repository = ragRepository,
                 artifactStore = application.artifactStore,
+                clusterController = application.clusterController,
             )
         } else if (selectedDestination == 5) {
             ApiScreen(

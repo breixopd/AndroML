@@ -11,12 +11,16 @@ import dev.androml.cluster.core.ClusterInferenceTask
 import dev.androml.cluster.core.ClusterJobId
 import dev.androml.cluster.core.ClusterNode
 import dev.androml.cluster.core.ClusterPeer
+import dev.androml.cluster.core.ClusterRagCodec
+import dev.androml.cluster.core.ClusterRagSearchTask
 import dev.androml.cluster.core.ClusterRequest
 import dev.androml.cluster.core.ClusterWorkload
 import dev.androml.cluster.core.ContentHash
+import dev.androml.cluster.core.DistributedRagMerger
 import dev.androml.cluster.core.IdempotentClusterExecutor
 import dev.androml.cluster.core.InMemoryClusterJobLedger
 import dev.androml.cluster.core.NoEligibleClusterNode
+import dev.androml.cluster.core.NodeRetrievalResult
 import dev.androml.cluster.core.NodeCapabilities
 import dev.androml.cluster.core.PeerEndpoint
 import dev.androml.cluster.core.PeerId
@@ -28,7 +32,9 @@ import dev.androml.cluster.transport.ClusterTransportConfig
 import dev.androml.core.api.CertificateFingerprint
 import dev.androml.core.database.ClusterPeerRepository
 import dev.androml.core.database.ModelCatalogRepository
+import dev.androml.core.database.RagRepository
 import dev.androml.core.files.FileArtifactStore
+import dev.androml.core.rag.HybridRetriever
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.DeviceProfile
@@ -45,6 +51,9 @@ import dev.androml.runtime.service.InferenceServiceClient
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -76,6 +85,7 @@ class ClusterController(
     private val inferenceServiceClient: InferenceServiceClient,
     private val catalogRepository: ModelCatalogRepository,
     private val artifactStore: FileArtifactStore,
+    private val ragRepository: RagRepository,
     private val deviceProfileProvider: () -> DeviceProfile,
 ) {
     private val _state = MutableStateFlow<ClusterControllerState>(ClusterControllerState.Disabled)
@@ -256,6 +266,62 @@ class ClusterController(
         throw lastFailure ?: IllegalStateException("cluster inference deadline expired")
     }
 
+    /** Fans a bounded query out to fresh trusted nodes and merges citation-bearing local results. */
+    suspend fun searchDistributedRag(
+        task: ClusterRagSearchTask,
+        timeoutMillis: Long = DEFAULT_REMOTE_TIMEOUT_MILLIS,
+    ): List<dev.androml.cluster.core.DistributedRetrievalResult> = withContext(Dispatchers.IO) {
+        require(timeoutMillis in 1_000L..10 * 60 * 1_000L) { "cluster RAG timeout is out of bounds" }
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        val localNodeId = clusterNodeId(identity.fingerprint)
+        val payload = ClusterRagCodec.encodeTask(task)
+        val jobId = ClusterJobId.parse("rag-${UUID.randomUUID()}")
+        val deadline = System.currentTimeMillis() + timeoutMillis
+
+        peerRepository.snapshot()
+            .filter { it.peer.paired && !it.peer.revoked }
+            .forEach { stored ->
+                try {
+                    refreshPeer(stored.peer.id)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    // Offline nodes are omitted from the fan-out.
+                }
+            }
+        val peers = peerRepository.snapshot()
+            .filter { stored ->
+                stored.peer.paired &&
+                    !stored.peer.revoked &&
+                    stored.peer.capabilities.lastSeenEpochMillis >= System.currentTimeMillis() - CAPABILITY_STALE_AFTER_MILLIS &&
+                    ClusterWorkload.RagSearch in stored.peer.capabilities.supportedWorkloads
+            }
+        val shards = mutableListOf<NodeRetrievalResult>()
+        val localResults = executeLocalRag(payload)
+        shards += NodeRetrievalResult(localNodeId, ClusterRagCodec.decodeResult(localResults))
+        coroutineScope {
+            peers.map { peer ->
+                async(Dispatchers.IO) {
+                    try {
+                        val results = executeRemoteRag(
+                            peerId = peer.peer.id,
+                            task = task,
+                            jobId = jobId,
+                            timeoutMillis = (deadline - System.currentTimeMillis()).coerceAtLeast(1_000L),
+                            deadlineEpochMillis = deadline,
+                        )
+                        NodeRetrievalResult(peer.peer.id, results)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll().filterNotNull().forEach(shards::add)
+        }
+        DistributedRagMerger().merge(task.query.topK, shards)
+    }
+
     suspend fun executeRemote(
         peerId: PeerId,
         task: ClusterInferenceTask,
@@ -316,17 +382,77 @@ class ClusterController(
 
     private inner class LocalClusterExecutionHandler : ClusterExecutionHandler {
         override fun execute(request: ClusterExecutionRequest): ByteArray {
-            require(request.request.workload == ClusterWorkload.InferenceReplica) {
-                "this node currently accepts inference replica work only"
-            }
-            val task = ClusterInferenceCodec.decodeTask(request.payload)
-            require(request.request.modelHash == task.modelHash) {
-                "inference task model hash does not match the cluster request"
-            }
-            return runBlocking(Dispatchers.Default) {
-                executeLocalInference(task)
+            return when (request.request.workload) {
+                ClusterWorkload.InferenceReplica -> {
+                    val task = ClusterInferenceCodec.decodeTask(request.payload)
+                    require(request.request.modelHash == task.modelHash) {
+                        "inference task model hash does not match the cluster request"
+                    }
+                    runBlocking(Dispatchers.Default) {
+                        executeLocalInference(task)
+                    }
+                }
+                ClusterWorkload.RagSearch -> runBlocking(Dispatchers.Default) {
+                    executeLocalRag(request.payload)
+                }
+                ClusterWorkload.WorkflowStage -> {
+                    throw IllegalArgumentException("workflow stage bridge is not installed on this node")
+                }
             }
         }
+    }
+
+    private suspend fun executeLocalRag(taskPayload: ByteArray): ByteArray {
+        val task = ClusterRagCodec.decodeTask(taskPayload)
+        val chunks = ragRepository.search(
+            collectionId = task.collectionId,
+            query = task.query.text,
+            limit = task.query.topK,
+        )
+        return ClusterRagCodec.encodeResult(HybridRetriever().retrieve(task.query, chunks))
+    }
+
+    private suspend fun executeRemoteRag(
+        peerId: PeerId,
+        task: ClusterRagSearchTask,
+        jobId: ClusterJobId,
+        timeoutMillis: Long,
+        deadlineEpochMillis: Long,
+    ): List<dev.androml.core.rag.RetrievalResult> = withContext(Dispatchers.IO) {
+        val peer = peerRepository.snapshot().firstOrNull { it.peer.id == peerId }
+            ?: throw IllegalArgumentException("cluster peer does not exist")
+        check(peer.peer.paired && !peer.peer.revoked) { "cluster peer is not paired" }
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        val peerCertificate = X509CertificateCodec.decodeDer(peer.certificateDer)
+        val payload = ClusterRagCodec.encodeTask(task)
+        val request = ClusterExecutionRequest(
+            sourcePeerId = clusterNodeId(identity.fingerprint),
+            request = ClusterRequest(
+                jobId = jobId,
+                attempt = 1,
+                workload = ClusterWorkload.RagSearch,
+                modelKey = task.collectionId.value,
+                modelHash = null,
+                requiredRamBytes = 0L,
+                deadlineEpochMillis = deadlineEpochMillis,
+                payloadHash = ContentHash.parse(sha256(payload)),
+                idempotencyKey = "${jobId.value}:${peerId.value}",
+            ),
+            payload = payload,
+        )
+        val response = ClusterExecutionClient(
+            clientIdentity = identity,
+            trustedServerCertificate = peerCertificate,
+            readTimeoutMillis = timeoutMillis.toInt(),
+        ).execute(peer.peer.endpoint, request)
+        if (response.status != ClusterExecutionStatus.Completed &&
+            response.status != ClusterExecutionStatus.AlreadyCompleted
+        ) {
+            throw IllegalStateException(response.safeMessage ?: "remote cluster RAG failed")
+        }
+        ClusterRagCodec.decodeResult(
+            response.output ?: throw IllegalStateException("remote cluster RAG returned no results"),
+        )
     }
 
     private suspend fun executeLocalInference(task: ClusterInferenceTask): ByteArray {
@@ -444,6 +570,7 @@ class ClusterController(
         const val CLUSTER_TLS_SUBJECT = "AndroML cluster node"
         const val DEFAULT_REMOTE_TIMEOUT_MILLIS = 60_000L
         const val DEFAULT_CLUSTER_PORT = 8789
+        const val CAPABILITY_STALE_AFTER_MILLIS = 30_000L
 
         fun sha256(value: ByteArray): String =
             java.security.MessageDigest.getInstance("SHA-256")

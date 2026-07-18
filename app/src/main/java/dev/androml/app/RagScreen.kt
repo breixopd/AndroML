@@ -30,9 +30,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.androml.core.database.RagRepository
 import dev.androml.core.files.FileArtifactStore
+import dev.androml.cluster.core.ClusterRagSearchTask
 import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.DeterministicChunker
 import dev.androml.core.rag.RagDocument
+import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.rag.TextChunk
 import java.io.ByteArrayInputStream
 import java.security.MessageDigest
@@ -47,6 +49,7 @@ fun RagScreen(
     modifier: Modifier = Modifier,
     repository: RagRepository,
     artifactStore: FileArtifactStore,
+    clusterController: ClusterController,
 ) {
     val collections by repository.observeCollections().collectAsState(initial = emptyList())
     var selectedCollectionId by remember { mutableStateOf<String?>(null) }
@@ -56,7 +59,8 @@ fun RagScreen(
     var sourceLabel by remember { mutableStateOf("manual://phone") }
     var documentText by remember { mutableStateOf("") }
     var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<TextChunk>>(emptyList()) }
+    var results by remember { mutableStateOf<List<RagScreenResult>>(emptyList()) }
+    var searchPairedPhones by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -148,10 +152,29 @@ fun RagScreen(
         busy = true
         scope.launch {
             try {
-                results = withContext(Dispatchers.IO) {
-                    repository.search(CollectionId.parse(targetCollection), query.trim())
+                if (searchPairedPhones) {
+                    val merged = withContext(Dispatchers.IO) {
+                        clusterController.searchDistributedRag(
+                            ClusterRagSearchTask(
+                                collectionId = CollectionId.parse(targetCollection),
+                                query = RetrievalQuery(query.trim()),
+                            ),
+                        )
+                    }
+                    results = merged.map { result ->
+                        RagScreenResult(
+                            nodeId = result.nodeId.value,
+                            chunk = result.result.chunk,
+                            fusedScore = result.result.citation.fusedScore,
+                        )
+                    }
+                    message = "${results.size} merged result(s) from ${results.map(RagScreenResult::nodeId).distinct().size} node(s)"
+                } else {
+                    results = withContext(Dispatchers.IO) {
+                        repository.search(CollectionId.parse(targetCollection), query.trim())
+                    }.map { chunk -> RagScreenResult("this phone", chunk, null) }
+                    message = "${results.size} lexical result(s)"
                 }
-                message = "${results.size} lexical result(s)"
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -262,6 +285,12 @@ fun RagScreen(
                         singleLine = true,
                     )
                     Spacer(Modifier.height(8.dp))
+                    FilterChip(
+                        selected = searchPairedPhones,
+                        onClick = { searchPairedPhones = !searchPairedPhones },
+                        label = { Text("Fan out to paired phones") },
+                    )
+                    Spacer(Modifier.height(8.dp))
                     Button(onClick = ::search, enabled = !busy) { Text("Search collection") }
                 }
             }
@@ -271,16 +300,20 @@ fun RagScreen(
         }
         if (results.isNotEmpty()) {
             item { Text("Results", style = MaterialTheme.typography.titleMedium) }
-            items(results, key = { it.id.value }) { chunk ->
+            items(results, key = { "${it.nodeId}:${it.chunk.id.value}" }) { result ->
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Text(chunk.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                        Text(chunk.sourceLabel, style = MaterialTheme.typography.labelMedium)
+                        Text(result.chunk.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Text("${result.nodeId} · ${result.chunk.sourceLabel}", style = MaterialTheme.typography.labelMedium)
                         Spacer(Modifier.height(6.dp))
-                        Text(chunk.text)
+                        Text(result.chunk.text)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "chunk ${chunk.ordinal + 1} · ${chunk.span.startOffset}-${chunk.span.endOffset}",
+                            buildString {
+                                append("chunk ${result.chunk.ordinal + 1} · ")
+                                append("${result.chunk.span.startOffset}-${result.chunk.span.endOffset}")
+                                result.fusedScore?.let { append(" · score %.3f".format(Locale.ROOT, it)) }
+                            },
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -292,6 +325,12 @@ fun RagScreen(
         }
     }
 }
+
+private data class RagScreenResult(
+    val nodeId: String,
+    val chunk: TextChunk,
+    val fusedScore: Double?,
+)
 
 @Suppress("MagicNumber")
 private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")

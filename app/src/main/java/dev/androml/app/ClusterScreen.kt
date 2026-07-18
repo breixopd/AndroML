@@ -231,7 +231,7 @@ fun ClusterScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Cluster listener", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Enable the local mTLS endpoint after pairing at least one phone. The current bridge accepts verified inference replicas; workflow and distributed-RAG stages will use the same envelope as their adapters land.",
+                        "Enable the local mTLS endpoint after pairing at least one phone. Verified inference replicas and distributed RAG fan-out are enabled now; workflow-stage placement is the next cluster bridge.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
