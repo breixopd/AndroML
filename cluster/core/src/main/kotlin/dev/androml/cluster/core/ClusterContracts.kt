@@ -248,6 +248,7 @@ class InMemoryClusterJobLedger {
     private data class Record(
         var state: JobState,
         var outputHash: ContentHash?,
+        var output: ByteArray?,
     )
 
     private val records = mutableMapOf<JobAttemptKey, Record>()
@@ -255,7 +256,7 @@ class InMemoryClusterJobLedger {
     @Synchronized
     fun begin(key: JobAttemptKey): BeginAttempt = when (records[key]?.state) {
         null -> {
-            records[key] = Record(JobState.Running, outputHash = null)
+            records[key] = Record(JobState.Running, outputHash = null, output = null)
             BeginAttempt.Started
         }
 
@@ -265,11 +266,12 @@ class InMemoryClusterJobLedger {
     }
 
     @Synchronized
-    fun complete(key: JobAttemptKey, outputHash: ContentHash) {
+    fun complete(key: JobAttemptKey, outputHash: ContentHash, output: ByteArray? = null) {
         val record = records[key] ?: error("job attempt was not started")
         check(record.state == JobState.Running) { "job attempt is not running" }
         record.state = JobState.Completed
         record.outputHash = outputHash
+        record.output = output?.copyOf()
     }
 
     @Synchronized
@@ -284,6 +286,9 @@ class InMemoryClusterJobLedger {
 
     @Synchronized
     fun outputHash(key: JobAttemptKey): ContentHash? = records[key]?.outputHash
+
+    @Synchronized
+    fun output(key: JobAttemptKey): ByteArray? = records[key]?.output?.copyOf()
 }
 
 data class NodeRetrievalResult(

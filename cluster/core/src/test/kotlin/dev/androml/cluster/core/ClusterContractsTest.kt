@@ -119,6 +119,7 @@ class ClusterContractsTest {
         assertEquals(ClusterExecutionStatus.Completed, first.status)
         assertEquals(ClusterExecutionStatus.AlreadyCompleted, second.status)
         assertEquals(first.outputHash, second.outputHash)
+        assertArrayEquals(first.output, second.output)
         assertEquals(1, executions)
     }
 

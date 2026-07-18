@@ -30,6 +30,11 @@ object X509CertificateCodec {
             throw IllegalArgumentException("certificate is not valid base64", error)
         }
         require(der.size in 1..MAX_CERTIFICATE_BYTES) { "certificate bytes are out of bounds" }
+        return decodeDer(der)
+    }
+
+    fun decodeDer(der: ByteArray): X509Certificate {
+        require(der.size in 1..MAX_CERTIFICATE_BYTES) { "certificate bytes are out of bounds" }
         val certificate = CertificateFactory.getInstance("X.509")
             .generateCertificate(ByteArrayInputStream(der)) as X509Certificate
         require(certificate.encoded.contentEquals(der)) { "certificate has trailing or non-canonical bytes" }

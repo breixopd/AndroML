@@ -86,6 +86,16 @@ class AndroMLApplication : Application() {
         InferenceServiceClient(this)
     }
 
+    val clusterController: ClusterController by lazy {
+        ClusterController(
+            peerRepository = clusterPeerRepository,
+            tlsIdentityStore = clusterTlsIdentityStore,
+            inferenceServiceClient = inferenceServiceClient,
+            catalogRepository = catalogRepository,
+            artifactStore = artifactStore,
+        )
+    }
+
     val apiController: LocalApiController by lazy {
         LocalApiController(
             apiKeyRepository = apiKeyRepository,
@@ -99,6 +109,7 @@ class AndroMLApplication : Application() {
 
     override fun onTerminate() {
         apiController.close()
+        clusterController.close()
         inferenceServiceClient.close()
         catalogDatabase.close()
         super.onTerminate()

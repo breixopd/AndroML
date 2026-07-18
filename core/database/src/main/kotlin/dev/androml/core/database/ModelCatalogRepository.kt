@@ -12,6 +12,11 @@ class ModelCatalogRepository(
 
     suspend fun snapshotModels(): List<ModelRecordEntity> = dao.listModels()
 
+    suspend fun fileForArtifact(artifactSha256: String): ModelFileEntity? {
+        require(artifactSha256.matches(Regex("[a-f0-9]{64}"))) { "artifact hash must be SHA-256" }
+        return dao.fileForArtifact(artifactSha256)
+    }
+
     fun observeAllFiles(): Flow<List<ModelFileEntity>> = dao.observeAllFiles()
 
     fun observeFiles(reference: HuggingFaceModelReference): Flow<List<ModelFileEntity>> =

@@ -55,8 +55,10 @@ fun ClusterScreen(
     modifier: Modifier = Modifier,
     repository: ClusterPeerRepository,
     tlsIdentityStore: TlsIdentityStore,
+    controller: ClusterController,
 ) {
     val peers by repository.observe().collectAsState(initial = emptyList())
+    val listenerState by controller.state.collectAsState()
     var localIdentity by remember { mutableStateOf<TlsIdentitySummary?>(null) }
     var peerId by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
@@ -65,6 +67,7 @@ fun ClusterScreen(
     var certificateText by remember { mutableStateOf("") }
     var modelHashes by remember { mutableStateOf("") }
     var availableRamBytes by remember { mutableStateOf("0") }
+    var listenerPort by remember { mutableStateOf("8789") }
     var selectedWorkloads by remember {
         mutableStateOf(setOf(ClusterWorkload.InferenceReplica, ClusterWorkload.WorkflowStage, ClusterWorkload.RagSearch))
     }
@@ -125,6 +128,7 @@ fun ClusterScreen(
                     repository.upsert(StoredClusterPeer(peer, certificate.encoded))
                     peer
                 }
+                controller.stop()
                 message = "Paired ${stored.displayName}; waiting for its first signed heartbeat"
                 certificateText = ""
             } catch (error: CancellationException) {
@@ -142,6 +146,7 @@ fun ClusterScreen(
         scope.launch {
             try {
                 withContext(Dispatchers.IO) { repository.revoke(peer.peer.id) }
+                controller.stop()
                 message = "${peer.peer.displayName} revoked; its certificate can no longer authorize work"
             } catch (error: CancellationException) {
                 throw error
@@ -158,6 +163,7 @@ fun ClusterScreen(
         scope.launch {
             try {
                 withContext(Dispatchers.IO) { repository.remove(peer.peer.id) }
+                controller.stop()
                 message = "${peer.peer.displayName} and its stored certificate were removed"
             } catch (error: CancellationException) {
                 throw error
@@ -180,6 +186,81 @@ fun ClusterScreen(
                 "Pair trusted phones, inspect capability advertisements, and prepare secure whole-request replica/workflow/RAG placement. WAN federation and tensor sharding are not enabled.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Cluster listener", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Enable the local mTLS endpoint after pairing at least one phone. The current bridge accepts verified inference replicas; workflow and distributed-RAG stages will use the same envelope as their adapters land.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    when (val state = listenerState) {
+                        ClusterControllerState.Disabled -> {
+                            Text("Disabled", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        is ClusterControllerState.Running -> {
+                            Text(
+                                "Listening on ${state.host}:${state.port} · ${state.pairedPeerCount} trusted peer(s)",
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        is ClusterControllerState.Failed -> {
+                            Text("Failed: ${state.message}", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = listenerPort,
+                            onValueChange = { listenerPort = it.filter(Char::isDigit).take(5) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("Listener port") },
+                            singleLine = true,
+                            enabled = listenerState !is ClusterControllerState.Running && !busy,
+                        )
+                        Button(
+                            onClick = {
+                                busy = true
+                                message = null
+                                scope.launch {
+                                    try {
+                                        if (listenerState is ClusterControllerState.Running) {
+                                            controller.stop()
+                                            message = "Cluster listener stopped"
+                                        } else {
+                                            val parsedPort = listenerPort.toIntOrNull()
+                                                ?: throw IllegalArgumentException("listener port must be a number")
+                                            require(parsedPort in 1024..65535) {
+                                                "listener port must be between 1024 and 65535"
+                                            }
+                                            val nextState = withContext(Dispatchers.IO) {
+                                                controller.start(parsedPort)
+                                            }
+                                            if (nextState is ClusterControllerState.Failed) {
+                                                message = nextState.message
+                                            } else {
+                                                message = "Cluster listener enabled"
+                                            }
+                                        }
+                                    } catch (error: CancellationException) {
+                                        throw error
+                                    } catch (error: Throwable) {
+                                        message = error.message?.take(256) ?: "Cluster listener could not be changed"
+                                    } finally {
+                                        busy = false
+                                    }
+                                }
+                            },
+                            enabled = !busy,
+                            modifier = Modifier.align(androidx.compose.ui.Alignment.CenterVertically),
+                        ) {
+                            Text(if (listenerState is ClusterControllerState.Running) "Stop" else "Start")
+                        }
+                    }
+                }
+            }
         }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -302,7 +383,7 @@ fun ClusterScreen(
         }
         item { Text("Paired peers", style = MaterialTheme.typography.titleMedium) }
         if (peers.isEmpty()) {
-            item { Text("No peers are paired. The cluster listener remains unavailable until a peer is trusted and a workload bridge is enabled.") }
+            item { Text("No peers are paired. Pair a phone before starting the cluster listener.") }
         } else {
             items(peers, key = { it.peer.id.value }) { stored ->
                 ClusterPeerCard(

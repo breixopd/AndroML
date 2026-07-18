@@ -196,6 +196,7 @@ private fun AndroMLApp() {
                 modifier = Modifier.padding(paddingValues),
                 repository = clusterPeerRepository,
                 tlsIdentityStore = application.clusterTlsIdentityStore,
+                controller = application.clusterController,
             )
         }
     }

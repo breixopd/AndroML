@@ -64,9 +64,7 @@ data class ClusterExecutionResponse(
             }
 
             ClusterExecutionStatus.AlreadyCompleted -> {
-                require(output == null && outputHash != null) {
-                    "already-completed response must include only the output hash"
-                }
+                require(outputHash != null) { "already-completed response must include an output hash" }
                 require(safeMessage == null) { "already-completed response must not include an error" }
             }
 
@@ -109,6 +107,7 @@ class IdempotentClusterExecutor(
             BeginAttempt.Completed -> response(
                 request,
                 status = ClusterExecutionStatus.AlreadyCompleted,
+                output = ledger.output(key),
                 outputHash = requireNotNull(ledger.outputHash(key)) {
                     "completed cluster attempt has no output hash"
                 },
@@ -127,7 +126,7 @@ class IdempotentClusterExecutor(
             "cluster execution output exceeds the safety limit"
         }
         val outputHash = ContentHash.parse(sha256(output))
-        ledger.complete(key, outputHash)
+        ledger.complete(key, outputHash, output)
         response(
             request,
             status = ClusterExecutionStatus.Completed,
