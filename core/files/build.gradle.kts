@@ -1,7 +1,6 @@
 plugins {
     alias(libs.plugins.android.library)
 }
-
 android {
     namespace = "dev.androml.core.files"
     compileSdk = 37
@@ -18,4 +17,3 @@ android {
 dependencies {
     testImplementation(libs.junit)
 }
-

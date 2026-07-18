@@ -8,7 +8,6 @@ enum class ThermalStatus {
     Severe,
     Critical,
 }
-
 enum class MemoryPressure {
     Unknown,
     Nominal,
@@ -88,4 +87,3 @@ data class DeviceProfile(
         }
     }
 }
-

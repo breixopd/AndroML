@@ -22,4 +22,3 @@ class AndroidDeviceProfileCollectorInstrumentedTest {
         assertTrue((profile.availableStorageBytes ?: 0) > 0)
     }
 }
-

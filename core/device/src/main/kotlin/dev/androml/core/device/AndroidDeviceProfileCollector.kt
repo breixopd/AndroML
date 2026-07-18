@@ -57,4 +57,3 @@ class AndroidDeviceProfileCollector(private val context: Context) {
         }
     }
 }
-

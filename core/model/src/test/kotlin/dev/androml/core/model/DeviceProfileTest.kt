@@ -72,4 +72,3 @@ class DeviceProfileTest {
     private val Int.mebibytes: Long
         get() = this.toLong() * 1024L * 1024L
 }
-
