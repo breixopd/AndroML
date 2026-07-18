@@ -18,9 +18,20 @@ class ModelCatalogRepository(
         return dao.fileForArtifact(artifactSha256)
     }
 
+    suspend fun fileForModelKey(modelKey: String): ModelFileEntity? {
+        require(modelKey.isNotBlank() && modelKey.length <= 512) { "model key is invalid" }
+        return if (modelKey.matches(Regex("[a-f0-9]{64}"))) {
+            fileForArtifact(modelKey)
+        } else {
+            dao.fileForModelKey(modelKey)
+        }
+    }
+
     suspend fun installedArtifactHashes(): Set<ContentHash> = dao.listVerifiedArtifactHashes()
         .map(ContentHash::parse)
         .toSet()
+
+    suspend fun runnableModelKeys(): List<String> = dao.listRunnableModelKeys()
 
     fun observeAllFiles(): Flow<List<ModelFileEntity>> = dao.observeAllFiles()
 

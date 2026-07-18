@@ -92,6 +92,25 @@ class WorkflowController(
 
     fun observeDefinitions() = definitionRepository.observe()
 
+    suspend fun toolDescriptors(): List<ToolDescriptor> = withContext(Dispatchers.IO) {
+        tools.descriptors()
+    }
+
+    suspend fun invokeTool(
+        toolId: ToolId,
+        arguments: JsonObject,
+    ): ToolExecutionOutcome = withContext(Dispatchers.IO) {
+        ToolExecutor(tools).execute(
+            toolId = toolId,
+            arguments = arguments,
+            context = ToolExecutionContext(grantedScopes = setOf(DEVICE_READ_SCOPE)),
+        )
+    }
+
+    suspend fun hasAgentModel(): Boolean = withContext(Dispatchers.IO) {
+        catalogRepository.installedArtifactHashes().isNotEmpty()
+    }
+
     suspend fun save(definition: WorkflowDefinition) = withContext(Dispatchers.IO) {
         definitionRepository.save(definition)
     }

@@ -17,6 +17,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,8 +35,11 @@ import androidx.compose.ui.unit.dp
 import dev.androml.core.api.ApiScope
 import dev.androml.core.api.ApiKeyRecord
 import dev.androml.core.database.ApiKeyRepository
+import dev.androml.core.security.ApiClientCertificateRecord
+import dev.androml.core.security.ApiClientCertificateStore
 import dev.androml.core.security.TlsIdentityStore
 import dev.androml.core.security.TlsIdentitySummary
+import dev.androml.core.security.X509CertificateCodec
 import dev.androml.core.security.summary
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
@@ -49,10 +53,14 @@ fun ApiScreen(
     controller: LocalApiController,
     keyRepository: ApiKeyRepository,
     tlsIdentityStore: TlsIdentityStore,
+    clientCertificateStore: ApiClientCertificateStore,
 ) {
     val apiState by controller.state.collectAsState()
     var keys by remember { mutableStateOf<List<ApiKeyRecord>>(emptyList()) }
+    var clientCertificates by remember { mutableStateOf<List<ApiClientCertificateRecord>>(emptyList()) }
     var displayName by remember { mutableStateOf("phone client") }
+    var clientCertificateName by remember { mutableStateOf("") }
+    var clientCertificateText by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("8787") }
     var selectedScopes by remember {
         mutableStateOf(setOf(ApiScope.ModelsRead, ApiScope.Inference))
@@ -61,12 +69,19 @@ fun ApiScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var tlsSummary by remember { mutableStateOf<TlsIdentitySummary?>(null) }
+    var tlsCertificatePem by remember { mutableStateOf<String?>(null) }
     var tlsBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun refreshKeys() {
         scope.launch {
             keys = withContext(Dispatchers.IO) { keyRepository.snapshot() }
+        }
+    }
+
+    fun refreshClientCertificates() {
+        scope.launch {
+            clientCertificates = withContext(Dispatchers.IO) { clientCertificateStore.snapshot() }
         }
     }
 
@@ -80,14 +95,26 @@ fun ApiScreen(
         }
     }
 
+    LaunchedEffect(clientCertificateStore) {
+        try {
+            clientCertificates = withContext(Dispatchers.IO) { clientCertificateStore.snapshot() }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            message = "Trusted client certificate storage could not be read"
+        }
+    }
+
     LaunchedEffect(tlsIdentityStore) {
         try {
-            tlsSummary = withContext(Dispatchers.IO) {
+            val identity = withContext(Dispatchers.IO) {
                 tlsIdentityStore.loadOrCreate(
                     alias = API_TLS_ALIAS,
                     subjectName = API_TLS_SUBJECT,
-                ).summary()
+                )
             }
+            tlsSummary = identity.summary()
+            tlsCertificatePem = X509CertificateCodec.encodePem(identity.certificate)
         } catch (error: CancellationException) {
             throw error
         } catch (_: Throwable) {
@@ -123,11 +150,15 @@ fun ApiScreen(
         }
     }
 
-    fun toggleServer() {
+    fun stopServer() {
+        controller.stop()
+        message = "API stopped"
+    }
+
+    fun startLoopbackServer() {
         val running = apiState is LocalApiState.Running
         if (running) {
-            controller.stop()
-            message = "Loopback API stopped"
+            stopServer()
             return
         }
         val selectedPort = port.toIntOrNull()
@@ -154,6 +185,98 @@ fun ApiScreen(
         }
     }
 
+    fun startLanServer() {
+        if (apiState is LocalApiState.Running) {
+            stopServer()
+            return
+        }
+        val selectedPort = port.toIntOrNull()
+        if (selectedPort == null) {
+            message = "Port must be a number between 1024 and 65535"
+            return
+        }
+        if (clientCertificates.none { it.revokedAtEpochMillis == null }) {
+            message = "Pair at least one client certificate before enabling LAN API access"
+            return
+        }
+        busy = true
+        message = null
+        scope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) { controller.startLan(selectedPort) }
+                if (result is LocalApiState.Failed) message = result.message
+                else message = "LAN API enabled with mTLS and scoped bearer authentication."
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "LAN API could not start"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun addClientCertificate() {
+        busy = true
+        message = null
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    clientCertificateStore.add(
+                        displayName = clientCertificateName.trim().ifBlank { "LAN client" },
+                        certificate = X509CertificateCodec.decode(clientCertificateText),
+                    )
+                }
+                clientCertificateName = ""
+                clientCertificateText = ""
+                refreshClientCertificates()
+                message = "Trusted client certificate added. Restart the LAN API to apply it."
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "Client certificate could not be added"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun revokeClientCertificate(record: ApiClientCertificateRecord) {
+        busy = true
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { clientCertificateStore.revoke(record.id) }
+                if (apiState is LocalApiState.Running) controller.stop()
+                refreshClientCertificates()
+                message = "${record.displayName} revoked; LAN API stopped until restarted."
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "Client certificate could not be revoked"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun removeClientCertificate(record: ApiClientCertificateRecord) {
+        busy = true
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { clientCertificateStore.remove(record.id) }
+                if (apiState is LocalApiState.Running) controller.stop()
+                refreshClientCertificates()
+                message = "${record.displayName} removed; LAN API stopped until restarted."
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "Client certificate could not be removed"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     fun rotateTlsIdentity() {
         if (apiState is LocalApiState.Running) {
             message = "Stop the API before rotating its mTLS identity"
@@ -163,13 +286,15 @@ fun ApiScreen(
         message = null
         scope.launch {
             try {
-                tlsSummary = withContext(Dispatchers.IO) {
+                val identity = withContext(Dispatchers.IO) {
                     tlsIdentityStore.delete(API_TLS_ALIAS)
                     tlsIdentityStore.loadOrCreate(
                         alias = API_TLS_ALIAS,
                         subjectName = API_TLS_SUBJECT,
-                    ).summary()
+                    )
                 }
+                tlsSummary = identity.summary()
+                tlsCertificatePem = X509CertificateCodec.encodePem(identity.certificate)
                 message = "mTLS identity rotated; existing clients must be re-paired"
             } catch (error: CancellationException) {
                 throw error
@@ -189,7 +314,7 @@ fun ApiScreen(
         item {
             Text("Local API", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "Expose the installed runtime to local clients on this phone. The first test period is loopback-only; LAN access stays locked behind verified mTLS transport.",
+                "Expose the installed runtime to local clients. Loopback is the default; LAN access requires explicitly paired mTLS client certificates plus scoped bearer keys.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -201,7 +326,7 @@ fun ApiScreen(
                     Text(
                         when (val state = apiState) {
                             LocalApiState.Disabled -> "Disabled"
-                            is LocalApiState.Running -> "Listening on ${state.host}:${state.port}"
+                            is LocalApiState.Running -> "Listening on ${state.host}:${state.port} · ${state.bindMode.name}"
                             is LocalApiState.Failed -> "Failed: ${state.message}"
                         },
                         fontWeight = FontWeight.Bold,
@@ -212,20 +337,113 @@ fun ApiScreen(
                         onValueChange = { port = it.filter(Char::isDigit).take(5) },
                         enabled = apiState !is LocalApiState.Running && !busy,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Loopback port") },
+                        label = { Text("API port") },
                         singleLine = true,
                     )
                     Spacer(Modifier.height(8.dp))
                     Text("Authentication: scoped bearer API key", style = MaterialTheme.typography.bodySmall)
                     Text("Health checks are unauthenticated; models and inference are not.", style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(10.dp))
-                    Button(
-                        onClick = ::toggleServer,
-                        enabled = !busy,
+                    if (apiState is LocalApiState.Running) {
+                        Button(
+                            onClick = ::stopServer,
+                            enabled = !busy,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Stop API")
+                        }
+                    } else {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Button(
+                                onClick = ::startLoopbackServer,
+                                enabled = !busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                if (busy) CircularProgressIndicator()
+                                else Text("Enable loopback")
+                            }
+                            OutlinedButton(
+                                onClick = ::startLanServer,
+                                enabled = !busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Enable LAN")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Trusted LAN clients", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Paste an end-entity X.509 client certificate in PEM or base64 DER form. LAN requests still need a scoped bearer key.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = clientCertificateName,
+                        onValueChange = { clientCertificateName = it.take(128) },
                         modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Client name") },
+                        singleLine = true,
+                        enabled = !busy,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = clientCertificateText,
+                        onValueChange = { clientCertificateText = it.take(64 * 1024) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Client certificate") },
+                        minLines = 5,
+                        maxLines = 10,
+                        enabled = !busy,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = ::addClientCertificate,
+                        enabled = !busy && clientCertificateText.isNotBlank(),
                     ) {
-                        if (busy) CircularProgressIndicator()
-                        else Text(if (apiState is LocalApiState.Running) "Stop loopback API" else "Enable loopback API")
+                        Text("Trust client certificate")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    if (clientCertificates.isEmpty()) {
+                        Text("No LAN client certificates are paired.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        clientCertificates.forEach { certificate ->
+                            Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                                Text(certificate.displayName, style = MaterialTheme.typography.titleSmall)
+                                SelectionContainer {
+                                    Text(certificate.fingerprint.value, style = MaterialTheme.typography.bodySmall)
+                                }
+                                Text(
+                                    when {
+                                        certificate.revokedAtEpochMillis != null -> "Revoked"
+                                        certificate.isActiveAt(System.currentTimeMillis()) -> "Active until ${Instant.ofEpochMilli(certificate.certificate().notAfter.time)}"
+                                        else -> "Expired"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (certificate.revokedAtEpochMillis == null) {
+                                        TextButton(
+                                            onClick = { revokeClientCertificate(certificate) },
+                                            enabled = !busy,
+                                        ) { Text("Revoke") }
+                                    }
+                                    TextButton(
+                                        onClick = { removeClientCertificate(certificate) },
+                                        enabled = !busy,
+                                    ) { Text("Remove") }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -236,7 +454,7 @@ fun ApiScreen(
                     Text("mTLS identity", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "This certificate is reserved for the future LAN transport. LAN binding stays disabled until the verified mTLS server path is enabled.",
+                        "This certificate identifies the API server. LAN clients must pin it and present a trusted end-entity certificate; bearer keys still control API scopes.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -253,6 +471,13 @@ fun ApiScreen(
                             "Valid until ${Instant.ofEpochMilli(summary.notAfterEpochMillis)}",
                             style = MaterialTheme.typography.bodySmall,
                         )
+                        tlsCertificatePem?.let { certificatePem ->
+                            Spacer(Modifier.height(8.dp))
+                            Text("Server certificate (public)", style = MaterialTheme.typography.labelMedium)
+                            SelectionContainer {
+                                Text(certificatePem, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
                         TextButton(
                             onClick = ::rotateTlsIdentity,
@@ -295,6 +520,36 @@ fun ApiScreen(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf(ApiScope.RagRead, ApiScope.RagWrite).forEach { apiScope ->
+                            FilterChip(
+                                selected = apiScope in selectedScopes,
+                                onClick = {
+                                    selectedScopes = if (apiScope in selectedScopes) {
+                                        selectedScopes - apiScope
+                                    } else {
+                                        selectedScopes + apiScope
+                                    }
+                                },
+                                label = { Text(apiScope.displayName()) },
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(ApiScope.Tools, ApiScope.Agents).forEach { apiScope ->
+                            FilterChip(
+                                selected = apiScope in selectedScopes,
+                                onClick = {
+                                    selectedScopes = if (apiScope in selectedScopes) {
+                                        selectedScopes - apiScope
+                                    } else {
+                                        selectedScopes + apiScope
+                                    }
+                                },
+                                label = { Text(apiScope.displayName()) },
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(ApiScope.Cluster, ApiScope.Admin).forEach { apiScope ->
                             FilterChip(
                                 selected = apiScope in selectedScopes,
                                 onClick = {

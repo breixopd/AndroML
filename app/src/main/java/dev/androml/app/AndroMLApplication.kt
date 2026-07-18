@@ -1,11 +1,14 @@
 package dev.androml.app
 
 import android.app.Application
+import android.os.ParcelFileDescriptor
 import dev.androml.api.server.AndroMlApiServer
 import dev.androml.api.server.ApiInferenceGateway
 import dev.androml.api.server.ApiServerConfig
 import dev.androml.api.server.ChatCompletionRequest
 import dev.androml.api.server.ChatDelta
+import dev.androml.api.server.ApiFeatureGateway
+import dev.androml.core.api.BindMode
 import dev.androml.core.database.ApiKeyRepository
 import dev.androml.core.database.AndroMlDatabase
 import dev.androml.core.database.ClusterPeerRepository
@@ -18,13 +21,18 @@ import dev.androml.core.model.ModelWorkload
 import dev.androml.core.network.HuggingFaceArtifactDownloader
 import dev.androml.core.network.HuggingFaceModelClient
 import dev.androml.core.security.AndroidKeystoreSecretStore
+import dev.androml.core.security.ApiClientCertificateStore
+import dev.androml.core.security.MtlsContextFactory
 import dev.androml.core.security.SecretStore
 import dev.androml.core.security.TlsIdentityStore
+import dev.androml.core.security.TlsServerMaterial
 import dev.androml.runtime.api.InferenceEvent
 import dev.androml.runtime.api.InferenceRequest
 import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
+import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.service.InferenceServiceClient
+import dev.androml.runtime.service.OpenedInferenceSession
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -82,6 +90,10 @@ class AndroMLApplication : Application() {
         TlsIdentityStore(secretStore)
     }
 
+    val apiClientCertificateStore: ApiClientCertificateStore by lazy {
+        ApiClientCertificateStore(secretStore)
+    }
+
     val clusterTlsIdentityStore: TlsIdentityStore by lazy {
         TlsIdentityStore(secretStore)
     }
@@ -121,10 +133,18 @@ class AndroMLApplication : Application() {
         LocalApiController(
             apiKeyRepository = apiKeyRepository,
             catalogRepository = catalogRepository,
+            artifactStore = artifactStore,
             inferenceServiceClient = inferenceServiceClient,
             deviceProfileProvider = {
                 AndroidDeviceProfileCollector(applicationContext).collect()
             },
+            apiTlsIdentityStore = apiTlsIdentityStore,
+            clientCertificateStore = apiClientCertificateStore,
+            features = LocalApiFeatureGateway(
+                workflowController = workflowController,
+                workflowRepository = workflowDefinitionRepository,
+                clusterController = clusterController,
+            ),
         )
     }
 
@@ -143,6 +163,7 @@ sealed interface LocalApiState {
     data class Running(
         val host: String,
         val port: Int,
+        val bindMode: BindMode,
     ) : LocalApiState
 
     data class Failed(val message: String) : LocalApiState
@@ -151,8 +172,12 @@ sealed interface LocalApiState {
 class LocalApiController(
     private val apiKeyRepository: ApiKeyRepository,
     private val catalogRepository: ModelCatalogRepository,
+    private val artifactStore: FileArtifactStore,
     private val inferenceServiceClient: InferenceServiceClient,
     private val deviceProfileProvider: () -> dev.androml.core.model.DeviceProfile,
+    private val apiTlsIdentityStore: TlsIdentityStore,
+    private val clientCertificateStore: ApiClientCertificateStore,
+    private val features: ApiFeatureGateway,
 ) {
     private var server: AndroMlApiServer? = null
     private val _state = MutableStateFlow<LocalApiState>(LocalApiState.Disabled)
@@ -162,6 +187,38 @@ class LocalApiController(
     fun currentState(): LocalApiState = _state.value
 
     suspend fun startLoopback(port: Int): LocalApiState {
+        return startServer(
+            config = ApiServerConfig(port = port),
+            tlsMaterial = null,
+            displayHost = "127.0.0.1",
+        )
+    }
+
+    suspend fun startLan(port: Int): LocalApiState {
+        val clientCertificates = clientCertificateStore.activeCertificates()
+        check(clientCertificates.isNotEmpty()) {
+            "Pair at least one client certificate before enabling LAN API access"
+        }
+        val serverIdentity = apiTlsIdentityStore.loadOrCreate(
+            alias = API_TLS_ALIAS,
+            subjectName = API_TLS_SUBJECT,
+        )
+        return startServer(
+            config = ApiServerConfig(
+                bindMode = BindMode.Lan,
+                host = "0.0.0.0",
+                port = port,
+            ),
+            tlsMaterial = MtlsContextFactory.serverMaterial(serverIdentity, clientCertificates),
+            displayHost = "0.0.0.0",
+        )
+    }
+
+    private suspend fun startServer(
+        config: ApiServerConfig,
+        tlsMaterial: TlsServerMaterial?,
+        displayHost: String,
+    ): LocalApiState {
         synchronized(this) {
             if (server != null) return _state.value
         }
@@ -169,15 +226,13 @@ class LocalApiController(
             "Create at least one active API key before enabling the API"
         }
         val apiServer = AndroMlApiServer(
-            config = ApiServerConfig(port = port),
+            config = config,
             apiKeys = { apiKeyRepository.snapshot() },
-            models = {
-                catalogRepository.snapshotModels().map { model ->
-                    "${model.modelId}@${model.revision}"
-                }
-            },
+            models = { catalogRepository.runnableModelKeys() },
             inference = IsolatedRuntimeApiGateway(
                 inferenceServiceClient = inferenceServiceClient,
+                catalogRepository = catalogRepository,
+                artifactStore = artifactStore,
                 deviceProfileProvider = deviceProfileProvider,
             ),
             onKeyUsed = { id ->
@@ -187,12 +242,14 @@ class LocalApiController(
                     // Usage telemetry must not turn an authorized request into a failed request.
                 }
             },
+            tlsMaterial = tlsMaterial,
+            features = features,
         )
         return try {
             apiServer.start()
             synchronized(this) {
                 server = apiServer
-                val running = LocalApiState.Running("127.0.0.1", port)
+                val running = LocalApiState.Running(displayHost, config.port, config.bindMode)
                 _state.value = running
                 running
             }
@@ -217,25 +274,45 @@ class LocalApiController(
     fun close() = stop()
 }
 
+private const val API_TLS_ALIAS = "api-server"
+private const val API_TLS_SUBJECT = "AndroML API"
+
 private class IsolatedRuntimeApiGateway(
     private val inferenceServiceClient: InferenceServiceClient,
+    private val catalogRepository: ModelCatalogRepository,
+    private val artifactStore: FileArtifactStore,
     private val deviceProfileProvider: () -> dev.androml.core.model.DeviceProfile,
 ) : ApiInferenceGateway {
     override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flow {
         val device = deviceProfileProvider()
-        val session = inferenceServiceClient.openSession(
-            model = ModelRequirements(
-                workload = ModelWorkload.TextGeneration,
-                weightBytes = 1L,
-                contextTokens = 2048,
-            ),
-            configuration = RuntimeConfiguration(
-                cpuThreads = device.cpuCoreCount.coerceIn(1, 8),
-                contextTokens = 2048,
-                useAcceleration = false,
-            ),
+        val modelFile = catalogRepository.fileForModelKey(request.model)
+            ?: throw IllegalArgumentException("requested model is not installed")
+        require(modelFile.path.endsWith(".litertlm", ignoreCase = true)) {
+            "requested model does not have a LiteRT-LM artifact"
+        }
+        val artifactHash = modelFile.artifactSha256
+            ?: throw IllegalArgumentException("requested model artifact is not verified")
+        check(artifactStore.contains(artifactHash)) { "requested model artifact is missing" }
+        val descriptor = ParcelFileDescriptor.open(
+            artifactStore.fileFor(artifactHash),
+            ParcelFileDescriptor.MODE_READ_ONLY,
         )
+        var session: OpenedInferenceSession? = null
         try {
+            session = inferenceServiceClient.openSession(
+                model = ModelRequirements(
+                    workload = ModelWorkload.TextGeneration,
+                    weightBytes = modelFile.sizeBytes,
+                    contextTokens = 2048,
+                ),
+                configuration = RuntimeConfiguration(
+                    cpuThreads = device.cpuCoreCount.coerceIn(1, 8),
+                    contextTokens = 2048,
+                    useAcceleration = false,
+                ),
+                runtimeId = RuntimeId.parse("litertlm"),
+                modelFile = descriptor,
+            )
             val prompt = request.messages.joinToString("\n") { message ->
                 "${message.role}: ${message.content}"
             }
@@ -256,7 +333,8 @@ private class IsolatedRuntimeApiGateway(
                 }
             }
         } finally {
-            inferenceServiceClient.closeSession(session)
+            session?.let(inferenceServiceClient::closeSession)
+            descriptor.close()
         }
     }
 }

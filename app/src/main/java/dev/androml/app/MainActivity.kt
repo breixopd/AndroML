@@ -200,6 +200,7 @@ private fun AndroMLApp() {
                 controller = apiController,
                 keyRepository = apiKeyRepository,
                 tlsIdentityStore = application.apiTlsIdentityStore,
+                clientCertificateStore = application.apiClientCertificateStore,
             )
         } else {
             ClusterScreen(

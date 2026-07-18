@@ -21,8 +21,22 @@ abstract class ModelCatalogDao {
     @Query("SELECT * FROM model_files WHERE artifactSha256 = :artifactSha256 LIMIT 1")
     abstract suspend fun fileForArtifact(artifactSha256: String): ModelFileEntity?
 
+    @Query(
+        "SELECT * FROM model_files " +
+            "WHERE modelId || '@' || revision = :modelKey AND artifactSha256 IS NOT NULL " +
+            "ORDER BY CASE WHEN path LIKE '%.litertlm' THEN 0 ELSE 1 END, path ASC LIMIT 1",
+    )
+    abstract suspend fun fileForModelKey(modelKey: String): ModelFileEntity?
+
     @Query("SELECT artifactSha256 FROM model_files WHERE artifactSha256 IS NOT NULL")
     abstract suspend fun listVerifiedArtifactHashes(): List<String>
+
+    @Query(
+        "SELECT DISTINCT modelId || '@' || revision FROM model_files " +
+            "WHERE artifactSha256 IS NOT NULL AND path LIKE '%.litertlm' " +
+            "ORDER BY modelId ASC, revision ASC",
+    )
+    abstract suspend fun listRunnableModelKeys(): List<String>
 
     @Query(
         "SELECT * FROM model_files " +

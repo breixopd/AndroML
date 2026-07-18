@@ -5,6 +5,7 @@ import dev.androml.core.api.ApiScope
 import dev.androml.core.security.MtlsContextFactory
 import dev.androml.core.security.SelfSignedTlsIdentityFactory
 import io.ktor.client.request.header
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -29,6 +30,74 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroMlApiServerTest {
+    @Test
+    fun featureRoutesUseIndependentScopesAndReturnBoundedTypedResults() = testApplication {
+        val ragKey = ApiKeyCodec.generate("rag", setOf(ApiScope.RagRead), nowEpochMillis = 1L)
+        val toolKey = ApiKeyCodec.generate("tools", setOf(ApiScope.Tools), nowEpochMillis = 1L)
+        val featureGateway = object : ApiFeatureGateway {
+            override suspend fun ragSearch(request: ApiRagSearchRequest): ApiRagSearchResponse =
+                ApiRagSearchResponse(listOf(ApiRagResult("node-local", "Notes", "local", "answer", 0.9)))
+
+            override suspend fun listTools(): List<ApiToolInfo> = listOf(
+                ApiToolInfo("device.info", "Device information", "Reads local capability data", "Read", emptyList()),
+            )
+        }
+        val server = AndroMlApiServer(
+            config = ApiServerConfig(),
+            apiKeys = { listOf(ragKey.record, toolKey.record) },
+            models = { listOf("fake") },
+            inference = emptyInferenceGateway(),
+            features = featureGateway,
+        )
+        application { with(server) { module() } }
+
+        val denied = client.get("/v1/rag/search?collection_id=docs&q=hello")
+        assertEquals(HttpStatusCode.Unauthorized, denied.status)
+
+        val rag = client.get("/v1/rag/search?collection_id=docs&q=hello&top_k=4") {
+            header(HttpHeaders.Authorization, "Bearer ${ragKey.plaintextToken}")
+        }
+        assertEquals(HttpStatusCode.OK, rag.status)
+        assertTrue(rag.bodyAsText().contains("answer"))
+
+        val tools = client.get("/v1/tools") {
+            header(HttpHeaders.Authorization, "Bearer ${toolKey.plaintextToken}")
+        }
+        assertEquals(HttpStatusCode.OK, tools.status)
+        assertTrue(tools.bodyAsText().contains("device.info"))
+    }
+
+    @Test
+    fun workflowRunRouteRequiresAgentsScopeAndBoundsInput() = testApplication {
+        val key = ApiKeyCodec.generate("workflow", setOf(ApiScope.Agents), nowEpochMillis = 1L)
+        val server = AndroMlApiServer(
+            config = ApiServerConfig(maxRequestBodyBytes = 2_048),
+            apiKeys = { listOf(key.record) },
+            models = { listOf("fake") },
+            inference = emptyInferenceGateway(),
+            features = object : ApiFeatureGateway {
+                override suspend fun runWorkflow(request: ApiWorkflowRunRequest): ApiWorkflowRunResponse =
+                    ApiWorkflowRunResponse("run-1", "Completed", "done", null, null)
+            },
+        )
+        application { with(server) { module() } }
+
+        val response = client.post("/v1/workflows/runs") {
+            header(HttpHeaders.Authorization, "Bearer ${key.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"workflow_id\":\"demo\",\"version\":1,\"input\":\"hello\"}")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        assertTrue(response.bodyAsText().contains("Completed"))
+
+        val oversized = client.post("/v1/workflows/runs") {
+            header(HttpHeaders.Authorization, "Bearer ${key.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"workflow_id\":\"demo\",\"version\":1,\"input\":\"${"x".repeat(3_000)}\"}")
+        }
+        assertEquals(HttpStatusCode.PayloadTooLarge, oversized.status)
+    }
+
     @Test
     fun chatRequiresScopedApiKeyAndSupportsSse() = testApplication {
         val generated = ApiKeyCodec.generate("test", setOf(ApiScope.Inference), nowEpochMillis = 1L)
@@ -184,5 +253,9 @@ class AndroMlApiServerTest {
         } finally {
             server.stop()
         }
+    }
+
+    private fun emptyInferenceGateway() = object : ApiInferenceGateway {
+        override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flowOf()
     }
 }

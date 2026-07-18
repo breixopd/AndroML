@@ -184,6 +184,7 @@ class AndroMlApiServer(
     private val securityPolicy: ApiSecurityPolicy? = null,
     private val onKeyUsed: suspend (ApiKeyId) -> Unit = {},
     private val tlsMaterial: TlsServerMaterial? = null,
+    private val features: ApiFeatureGateway = ApiFeatureGateway.Empty,
 ) {
     private val authenticator = ApiKeyAuthenticator()
     private var engine: EmbeddedServer<*, *>? = null
@@ -242,6 +243,131 @@ class AndroMlApiServer(
                     Json.encodeToString(buildJsonObject { put("object", "list"); put("data", data) }),
                     ContentType.Application.Json,
                 )
+            }
+            get("/v1/rag/search") {
+                if (!authorize(call, ApiScope.RagRead, ApiRequestClass.ReadOnly)) return@get
+                val request = runCatching {
+                    ApiRagSearchRequest(
+                        collectionId = call.request.queryParameters["collection_id"]
+                            ?: throw IllegalArgumentException("collection_id is missing"),
+                        query = call.request.queryParameters["q"]
+                            ?: throw IllegalArgumentException("q is missing"),
+                        topK = call.request.queryParameters["top_k"]?.toIntOrNull() ?: 8,
+                    )
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@get
+                }
+                try {
+                    val response = features.ragSearch(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            get("/v1/workflows") {
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@get
+                try {
+                    val workflows = features.listWorkflows()
+                    val data = buildJsonArray {
+                        workflows.forEach { workflow ->
+                            add(buildJsonObject {
+                                put("id", workflow.workflowId)
+                                put("version", workflow.version)
+                                put("node_count", workflow.nodeCount)
+                                put("edge_count", workflow.edgeCount)
+                            })
+                        }
+                    }
+                    call.respondText(
+                        Json.encodeToString(buildJsonObject { put("object", "list"); put("data", data) }),
+                        ContentType.Application.Json,
+                    )
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            post("/v1/workflows/runs") {
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@post
+                val request = runCatching {
+                    val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
+                    ApiWorkflowRunRequest(
+                        workflowId = root.string("workflow_id"),
+                        version = root.intOrDefault("version", -1),
+                        input = root.string("input"),
+                    )
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@post
+                }
+                try {
+                    val response = features.runWorkflow(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            get("/v1/tools") {
+                if (!authorize(call, ApiScope.Tools, ApiRequestClass.ReadOnly)) return@get
+                try {
+                    val data = buildJsonArray {
+                        features.listTools().forEach { tool -> add(tool.toJson()) }
+                    }
+                    call.respondText(
+                        Json.encodeToString(buildJsonObject { put("object", "list"); put("data", data) }),
+                        ContentType.Application.Json,
+                    )
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            post("/v1/tools/invoke") {
+                if (!authorize(call, ApiScope.Tools, ApiRequestClass.Mutating)) return@post
+                val request = runCatching {
+                    val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
+                    ApiToolInvocationRequest(
+                        toolId = root.string("tool_id"),
+                        arguments = root["arguments"]?.jsonObject
+                            ?: throw IllegalArgumentException("arguments is missing"),
+                    )
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@post
+                }
+                try {
+                    val response = features.invokeTool(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            get("/v1/agents") {
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@get
+                try {
+                    val data = buildJsonArray {
+                        features.listAgents().forEach { agent ->
+                            add(buildJsonObject {
+                                put("id", agent.id)
+                                put("display_name", agent.displayName)
+                            })
+                        }
+                    }
+                    call.respondText(
+                        Json.encodeToString(buildJsonObject { put("object", "list"); put("data", data) }),
+                        ContentType.Application.Json,
+                    )
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            get("/v1/cluster") {
+                if (!authorize(call, ApiScope.Cluster, ApiRequestClass.ReadOnly)) return@get
+                try {
+                    val status = features.clusterStatus()
+                    call.respondText(Json.encodeToString(status.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
             }
             post("/v1/chat/completions") {
                 if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
@@ -347,6 +473,66 @@ class AndroMlApiServer(
     }
 }
 
+private fun ApiRagSearchResponse.toJson() = buildJsonObject {
+    put("object", "rag.search")
+    put("data", buildJsonArray {
+        results.forEach { result ->
+            add(buildJsonObject {
+                put("node_id", result.nodeId)
+                put("title", result.title)
+                put("source", result.source)
+                put("text", result.text)
+                put("score", result.score)
+            })
+        }
+    })
+}
+
+private fun ApiWorkflowRunResponse.toJson() = buildJsonObject {
+    put("run_id", runId)
+    put("status", status)
+    output?.let { put("output", it) }
+    error?.let { put("error", it) }
+    waitingForNode?.let { put("waiting_for_node", it) }
+}
+
+private fun ApiToolInfo.toJson() = buildJsonObject {
+    put("id", id)
+    put("display_name", displayName)
+    put("description", description)
+    put("side_effect", sideEffect)
+    put("scopes", buildJsonArray { scopes.forEach { add(JsonPrimitive(it)) } })
+}
+
+private fun ApiToolInvocationResponse.toJson() = buildJsonObject {
+    put("status", status)
+    result?.let { put("result", it) }
+    reason?.let { put("reason", it) }
+    approvalId?.let { put("approval_id", it) }
+}
+
+private fun ApiClusterStatus.toJson() = buildJsonObject {
+    put("enabled", enabled)
+    nodeId?.let { put("node_id", it) }
+    put("paired_peer_count", pairedPeerCount)
+}
+
+private suspend fun ApplicationCall.respondApiFeatureError(error: Throwable) {
+    val status = when (error) {
+        is RequestBodyTooLargeException -> HttpStatusCode.PayloadTooLarge
+        is ApiFeatureUnavailableException -> HttpStatusCode.NotImplemented
+        is IllegalArgumentException -> HttpStatusCode.BadRequest
+        else -> HttpStatusCode.InternalServerError
+    }
+    val message = when (status) {
+        HttpStatusCode.PayloadTooLarge -> "request body too large"
+        HttpStatusCode.NotImplemented -> "API feature is not enabled"
+        HttpStatusCode.BadRequest -> "invalid request"
+        else -> "API feature failed"
+    }
+    respondText("{\"error\":\"$message\"}", status = status)
+}
+
 private suspend fun ApplicationCall.receiveBoundedText(maxBytes: Int): String {
     val bytes = receiveChannel()
         .readRemaining(maxBytes.toLong() + 1L)
@@ -354,6 +540,9 @@ private suspend fun ApplicationCall.receiveBoundedText(maxBytes: Int): String {
     if (bytes.size > maxBytes) throw RequestBodyTooLargeException()
     return bytes.toString(Charsets.UTF_8)
 }
+
+private suspend fun ApplicationCall.receiveBoundedJson(maxBytes: Int): JsonObject =
+    Json.parseToJsonElement(receiveBoundedText(maxBytes)).jsonObject
 
 private fun JsonObject.string(name: String): String =
     this[name]?.jsonPrimitive?.contentOrNull ?: throw IllegalArgumentException("missing string")
