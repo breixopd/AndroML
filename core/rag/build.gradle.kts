@@ -1,0 +1,21 @@
+plugins {
+    alias(libs.plugins.android.library)
+}
+
+android {
+    namespace = "dev.androml.core.rag"
+    compileSdk = 37
+
+    defaultConfig {
+        minSdk = 29
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+}
+
+dependencies {
+    implementation(project(":core:model"))
+    testImplementation(libs.junit)
+}
