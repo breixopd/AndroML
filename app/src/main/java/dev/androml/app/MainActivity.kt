@@ -104,7 +104,7 @@ private fun AndroMLTheme(content: @Composable () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AndroMLApp() {
-    val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "API", "Cluster")
+    val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "Workflows", "API", "Cluster")
     var selectedDestination by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val application = context.applicationContext as AndroMLApplication
@@ -121,6 +121,8 @@ private fun AndroMLApp() {
     val apiKeyRepository = application.apiKeyRepository
     val ragRepository = application.ragRepository
     val clusterPeerRepository = application.clusterPeerRepository
+    val workflowController = application.workflowController
+    val workflowDefinitionRepository = application.workflowDefinitionRepository
 
     Scaffold(
         topBar = {
@@ -186,6 +188,13 @@ private fun AndroMLApp() {
                 clusterController = application.clusterController,
             )
         } else if (selectedDestination == 5) {
+            WorkflowScreen(
+                modifier = Modifier.padding(paddingValues),
+                controller = workflowController,
+                definitionRepository = workflowDefinitionRepository,
+                installedModelFiles = catalogFiles,
+            )
+        } else if (selectedDestination == 6) {
             ApiScreen(
                 modifier = Modifier.padding(paddingValues),
                 controller = apiController,

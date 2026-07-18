@@ -18,9 +18,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ApiKeyEntity::class,
         WorkflowEventEntity::class,
         WorkflowCheckpointEntity::class,
+        WorkflowDefinitionEntity::class,
         ClusterPeerEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
@@ -33,6 +34,8 @@ abstract class AndroMlDatabase : RoomDatabase() {
     abstract fun workflowEventDao(): WorkflowEventDao
 
     abstract fun workflowCheckpointDao(): WorkflowCheckpointDao
+
+    abstract fun workflowDefinitionDao(): WorkflowDefinitionDao
 
     abstract fun clusterPeerDao(): ClusterPeerDao
 
@@ -194,6 +197,23 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS workflow_definitions (
+                        workflowId TEXT NOT NULL,
+                        version INTEGER NOT NULL,
+                        payload TEXT NOT NULL,
+                        createdAtEpochMillis INTEGER NOT NULL,
+                        updatedAtEpochMillis INTEGER NOT NULL,
+                        PRIMARY KEY(workflowId, version)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
@@ -204,6 +224,7 @@ abstract class AndroMlDatabase : RoomDatabase() {
             MIGRATION_3_4,
             MIGRATION_4_5,
             MIGRATION_5_6,
+            MIGRATION_6_7,
         ).build()
     }
 }

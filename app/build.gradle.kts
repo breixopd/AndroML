@@ -96,6 +96,8 @@ dependencies {
     implementation(project(":core:rag"))
     implementation(project(":core:api"))
     implementation(project(":core:agents"))
+    implementation(project(":core:workflow"))
+    implementation(project(":core:tools"))
     implementation(project(":core:security"))
     implementation(project(":core:device"))
     implementation(project(":core:network"))
@@ -110,6 +112,7 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.work.runtime.ktx)
 
     val composeBom = platform(libs.androidx.compose.bom)

@@ -74,6 +74,10 @@ class AndroMLApplication : Application() {
         ClusterPeerRepository(catalogDatabase.clusterPeerDao())
     }
 
+    val workflowDefinitionRepository: dev.androml.core.database.WorkflowDefinitionRepository by lazy {
+        dev.androml.core.database.WorkflowDefinitionRepository(catalogDatabase.workflowDefinitionDao())
+    }
+
     val apiTlsIdentityStore: TlsIdentityStore by lazy {
         TlsIdentityStore(secretStore)
     }
@@ -94,6 +98,19 @@ class AndroMLApplication : Application() {
             catalogRepository = catalogRepository,
             artifactStore = artifactStore,
             ragRepository = ragRepository,
+            deviceProfileProvider = {
+                AndroidDeviceProfileCollector(applicationContext).collect()
+            },
+        )
+    }
+
+    val workflowController: WorkflowController by lazy {
+        WorkflowController(
+            definitionRepository = workflowDefinitionRepository,
+            eventStore = catalogDatabase.workflowEventDao(),
+            checkpointStore = catalogDatabase.workflowCheckpointDao(),
+            catalogRepository = catalogRepository,
+            clusterController = clusterController,
             deviceProfileProvider = {
                 AndroidDeviceProfileCollector(applicationContext).collect()
             },

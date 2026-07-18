@@ -13,6 +13,9 @@ import dev.androml.cluster.core.ClusterNode
 import dev.androml.cluster.core.ClusterPeer
 import dev.androml.cluster.core.ClusterRagCodec
 import dev.androml.cluster.core.ClusterRagSearchTask
+import dev.androml.cluster.core.ClusterWorkflowCodec
+import dev.androml.cluster.core.ClusterWorkflowStageResult
+import dev.androml.cluster.core.ClusterWorkflowStageTask
 import dev.androml.cluster.core.ClusterRequest
 import dev.androml.cluster.core.ClusterWorkload
 import dev.androml.cluster.core.ContentHash
@@ -35,6 +38,8 @@ import dev.androml.core.database.ModelCatalogRepository
 import dev.androml.core.database.RagRepository
 import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.rag.HybridRetriever
+import dev.androml.core.rag.CollectionId
+import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.DeviceProfile
@@ -48,6 +53,9 @@ import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.service.InferenceServiceClient
+import dev.androml.core.workflow.WorkflowDocument
+import dev.androml.core.workflow.WorkflowValue
+import dev.androml.core.workflow.WorkflowValueCodec
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -76,6 +84,11 @@ sealed interface ClusterControllerState {
 data class ClusterInferenceExecution(
     val placement: RouteDecision,
     val result: ClusterInferenceResult,
+)
+
+data class ClusterWorkflowStageExecution(
+    val placement: RouteDecision,
+    val result: ClusterWorkflowStageResult,
 )
 
 /** Owns the app's mTLS listener and bridges typed inference jobs into the isolated runtime. */
@@ -322,6 +335,89 @@ class ClusterController(
         DistributedRagMerger().merge(task.query.topK, shards)
     }
 
+    /** Routes one bounded model/RAG workflow stage as a complete request to a trusted node. */
+    suspend fun executeBestWorkflowStage(
+        task: ClusterWorkflowStageTask,
+        requiredRamBytes: Long = 0L,
+        timeoutMillis: Long = DEFAULT_REMOTE_TIMEOUT_MILLIS,
+    ): ClusterWorkflowStageExecution = withContext(Dispatchers.IO) {
+        require(task.stageKind == WORKFLOW_MODEL_STAGE || task.stageKind == WORKFLOW_RAG_STAGE) {
+            "unsupported distributed workflow stage"
+        }
+        if (task.stageKind == WORKFLOW_MODEL_STAGE) {
+            require(task.modelHash != null) { "distributed model stages require a model hash" }
+        }
+        require(requiredRamBytes >= 0L) { "required workflow RAM must not be negative" }
+        require(timeoutMillis in 1_000L..10 * 60 * 1_000L) {
+            "workflow execution timeout is out of bounds"
+        }
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        val payload = ClusterWorkflowCodec.encodeTask(task)
+        val jobId = ClusterJobId.parse("workflow-${UUID.randomUUID()}")
+        val deadline = System.currentTimeMillis() + timeoutMillis
+
+        peerRepository.snapshot()
+            .filter { it.peer.paired && !it.peer.revoked }
+            .forEach { stored ->
+                try {
+                    refreshPeer(stored.peer.id)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    // A stale/offline peer is excluded by the router below.
+                }
+            }
+
+        val localNode = buildLocalNode(identity)
+        val remoteNodes = peerRepository.snapshot().map { stored ->
+            ClusterNode(peer = stored.peer, isLocal = false)
+        }
+        val excluded = mutableSetOf<PeerId>()
+        var attempt = 1
+        var lastFailure: Exception? = null
+        while (attempt <= 1_000 && System.currentTimeMillis() < deadline) {
+            val request = ClusterRequest(
+                jobId = jobId,
+                attempt = attempt,
+                workload = ClusterWorkload.WorkflowStage,
+                modelKey = task.stageKey,
+                modelHash = task.modelHash,
+                requiredRamBytes = requiredRamBytes,
+                deadlineEpochMillis = deadline,
+                payloadHash = ContentHash.parse(sha256(payload)),
+                idempotencyKey = "${jobId.value}:$attempt",
+            )
+            val candidates = (listOf(localNode) + remoteNodes).filterNot { it.peer.id in excluded }
+            val decision = ClusterRouter().route(request, candidates)
+            try {
+                val output = if (decision.target == localNode.peer.id) {
+                    executeLocalWorkflowStage(task)
+                } else {
+                    executeRemoteWorkflowStage(
+                        peerId = decision.target,
+                        task = task,
+                        requiredRamBytes = requiredRamBytes,
+                        timeoutMillis = (deadline - System.currentTimeMillis()).coerceAtLeast(1_000L),
+                        jobId = jobId,
+                        attempt = attempt,
+                        deadlineEpochMillis = deadline,
+                    )
+                }
+                return@withContext ClusterWorkflowStageExecution(
+                    placement = decision,
+                    result = ClusterWorkflowCodec.decodeResult(output),
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                lastFailure = error
+                excluded += decision.target
+                attempt += 1
+            }
+        }
+        throw lastFailure ?: IllegalStateException("workflow stage deadline expired")
+    }
+
     suspend fun executeRemote(
         peerId: PeerId,
         task: ClusterInferenceTask,
@@ -353,7 +449,7 @@ class ClusterController(
             sourcePeerId = clusterNodeId(identity.fingerprint),
             request = ClusterRequest(
                 jobId = jobId,
-                attempt = 1,
+                attempt = attempt,
                 workload = ClusterWorkload.InferenceReplica,
                 modelKey = null,
                 modelHash = task.modelHash,
@@ -396,7 +492,9 @@ class ClusterController(
                     executeLocalRag(request.payload)
                 }
                 ClusterWorkload.WorkflowStage -> {
-                    throw IllegalArgumentException("workflow stage bridge is not installed on this node")
+                    runBlocking(Dispatchers.Default) {
+                        executeLocalWorkflowStage(ClusterWorkflowCodec.decodeTask(request.payload))
+                    }
                 }
             }
         }
@@ -452,6 +550,101 @@ class ClusterController(
         }
         ClusterRagCodec.decodeResult(
             response.output ?: throw IllegalStateException("remote cluster RAG returned no results"),
+        )
+    }
+
+    private suspend fun executeRemoteWorkflowStage(
+        peerId: PeerId,
+        task: ClusterWorkflowStageTask,
+        requiredRamBytes: Long,
+        timeoutMillis: Long,
+        jobId: ClusterJobId,
+        attempt: Int,
+        deadlineEpochMillis: Long,
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val peer = peerRepository.snapshot().firstOrNull { it.peer.id == peerId }
+            ?: throw IllegalArgumentException("cluster peer does not exist")
+        check(peer.peer.paired && !peer.peer.revoked) { "cluster peer is not paired" }
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        val peerCertificate = X509CertificateCodec.decodeDer(peer.certificateDer)
+        val payload = ClusterWorkflowCodec.encodeTask(task)
+        val request = ClusterExecutionRequest(
+            sourcePeerId = clusterNodeId(identity.fingerprint),
+            request = ClusterRequest(
+                jobId = jobId,
+                attempt = attempt,
+                workload = ClusterWorkload.WorkflowStage,
+                modelKey = task.stageKey,
+                modelHash = task.modelHash,
+                requiredRamBytes = requiredRamBytes,
+                deadlineEpochMillis = deadlineEpochMillis,
+                payloadHash = ContentHash.parse(sha256(payload)),
+                idempotencyKey = "${jobId.value}:$attempt",
+            ),
+            payload = payload,
+        )
+        val response = ClusterExecutionClient(
+            clientIdentity = identity,
+            trustedServerCertificate = peerCertificate,
+            readTimeoutMillis = timeoutMillis.toInt(),
+        ).execute(peer.peer.endpoint, request)
+        if (response.status != ClusterExecutionStatus.Completed &&
+            response.status != ClusterExecutionStatus.AlreadyCompleted
+        ) {
+            throw IllegalStateException(response.safeMessage ?: "remote workflow stage failed")
+        }
+        response.output ?: throw IllegalStateException("remote workflow stage returned no output")
+    }
+
+    private suspend fun executeLocalWorkflowStage(task: ClusterWorkflowStageTask): ByteArray {
+        val input = WorkflowValueCodec.decode(task.inputPayload)
+        val output = when (task.stageKind) {
+            WORKFLOW_MODEL_STAGE -> {
+                val text = input as? WorkflowValue.Text
+                    ?: throw IllegalArgumentException("model workflow stage requires text input")
+                val modelHash = task.modelHash
+                    ?: throw IllegalArgumentException("model workflow stage requires a model hash")
+                val profile = deviceProfileProvider()
+                val result = ClusterInferenceCodec.decodeResult(
+                    executeLocalInference(
+                        ClusterInferenceTask(
+                            modelHash = modelHash,
+                            prompt = text.value,
+                            maxNewTokens = 512,
+                            temperature = 0.7,
+                            contextTokens = 2_048,
+                            kvCacheBytesPerToken = 0L,
+                            cpuThreads = profile.cpuCoreCount.coerceIn(1, 8),
+                            useAcceleration = false,
+                            runtimeId = RuntimeId.parse("litertlm").value,
+                        ),
+                    ),
+                )
+                WorkflowValue.Text(result.text)
+            }
+            WORKFLOW_RAG_STAGE -> {
+                val text = input as? WorkflowValue.Text
+                    ?: throw IllegalArgumentException("RAG workflow stage requires text input")
+                val collectionId = CollectionId.parse(task.stageKey)
+                val ragTask = ClusterRagSearchTask(
+                    collectionId = collectionId,
+                    query = RetrievalQuery(text.value),
+                )
+                val results = ClusterRagCodec.decodeResult(executeLocalRag(ClusterRagCodec.encodeTask(ragTask)))
+                WorkflowValue.Documents(
+                    results.map { result ->
+                        WorkflowDocument(
+                            title = result.chunk.title,
+                            sourceLabel = result.chunk.sourceLabel,
+                            text = result.chunk.text,
+                        )
+                    },
+                )
+            }
+            else -> throw IllegalArgumentException("unsupported distributed workflow stage")
+        }
+        return ClusterWorkflowCodec.encodeResult(
+            ClusterWorkflowStageResult(WorkflowValueCodec.encode(output)),
         )
     }
 
@@ -571,6 +764,8 @@ class ClusterController(
         const val DEFAULT_REMOTE_TIMEOUT_MILLIS = 60_000L
         const val DEFAULT_CLUSTER_PORT = 8789
         const val CAPABILITY_STALE_AFTER_MILLIS = 30_000L
+        const val WORKFLOW_MODEL_STAGE = "model"
+        const val WORKFLOW_RAG_STAGE = "rag"
 
         fun sha256(value: ByteArray): String =
             java.security.MessageDigest.getInstance("SHA-256")
