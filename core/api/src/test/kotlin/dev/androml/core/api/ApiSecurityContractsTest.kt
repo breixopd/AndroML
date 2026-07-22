@@ -55,6 +55,29 @@ class ApiSecurityContractsTest {
     }
 
     @Test
+    fun apiKeyHashUsesArgon2idAndDoesNotAcceptTampering() {
+        val generated = ApiKeyCodec.generate("argon", setOf(ApiScope.Inference), nowEpochMillis = 1L)
+        assertTrue(generated.record.tokenHash.startsWith("${'$'}argon2id${'$'}"))
+        assertNotNull(
+            ApiKeyAuthenticator().authenticate(
+                generated.plaintextToken,
+                listOf(generated.record),
+                ApiScope.Inference,
+                nowEpochMillis = 2L,
+            ),
+        )
+        assertEquals(
+            null,
+            ApiKeyAuthenticator().authenticate(
+                generated.plaintextToken.dropLast(1) + "x",
+                listOf(generated.record),
+                ApiScope.Inference,
+                nowEpochMillis = 2L,
+            ),
+        )
+    }
+
+    @Test
     fun loopbackAndLanPolicyHaveDifferentCertificateRequirements() {
         val loopback = ApiSecurityPolicy().evaluate(
             bindMode = BindMode.Loopback,

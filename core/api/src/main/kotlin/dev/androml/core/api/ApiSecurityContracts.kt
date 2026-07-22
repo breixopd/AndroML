@@ -5,6 +5,8 @@ import java.security.SecureRandom
 import java.time.Instant
 import java.util.Base64
 import java.util.Locale
+import org.bouncycastle.crypto.generators.Argon2BytesGenerator
+import org.bouncycastle.crypto.params.Argon2Parameters
 
 @JvmInline
 value class ApiKeyId private constructor(val value: String) {
@@ -48,7 +50,9 @@ data class ApiKeyRecord(
 ) {
     init {
         require(displayName.isNotBlank() && displayName.length <= 128) { "API key display name is invalid" }
-        require(tokenHash.matches(SHA256_PATTERN)) { "API key hash must be SHA-256" }
+        require(tokenHash.startsWith(Argon2idCodec.PREFIX) && tokenHash.length <= 512) {
+            "API key hash must be Argon2id"
+        }
         require(scopes.isNotEmpty()) { "API key must have at least one scope" }
         require(expiresAtEpochMillis == null || expiresAtEpochMillis > createdAtEpochMillis) {
             "API key expiry must be after creation"
@@ -99,7 +103,7 @@ object ApiKeyCodec {
     fun hash(plaintextToken: String): String {
         require(plaintextToken.startsWith(TOKEN_PREFIX)) { "API token prefix is invalid" }
         require(plaintextToken.length <= 256) { "API token is too long" }
-        return sha256(plaintextToken)
+        return Argon2idCodec.hash(plaintextToken)
     }
 
     private fun randomBytes(random: SecureRandom, size: Int): ByteArray =
@@ -121,16 +125,68 @@ class ApiKeyAuthenticator {
         requiredScope: ApiScope,
         nowEpochMillis: Long = Instant.now().toEpochMilli(),
     ): ApiAuthResult? {
-        val suppliedHash = runCatching { ApiKeyCodec.hash(plaintextToken) }.getOrNull() ?: return null
         return records.firstOrNull { record ->
             record.isUsableAt(nowEpochMillis) &&
                 requiredScope in record.scopes &&
-                MessageDigest.isEqual(
-                    suppliedHash.toByteArray(Charsets.US_ASCII),
-                    record.tokenHash.toByteArray(Charsets.US_ASCII),
-                )
+                runCatching { Argon2idCodec.verify(plaintextToken, record.tokenHash) }.getOrDefault(false)
         }?.let { ApiAuthResult(it, requiredScope) }
     }
+}
+
+/** Mobile-sized Argon2id PHC encoder/validator for API keys; plaintext tokens are never stored. */
+private object Argon2idCodec {
+    const val PREFIX = "${'$'}argon2id${'$'}"
+    private const val VERSION = 19
+    private const val MEMORY_KIB = 16 * 1024
+    private const val ITERATIONS = 2
+    private const val PARALLELISM = 1
+    private const val SALT_BYTES = 16
+    private const val HASH_BYTES = 32
+
+    fun hash(plaintext: String): String {
+        val salt = ByteArray(SALT_BYTES).also(SecureRandom()::nextBytes)
+        val digest = derive(plaintext, salt)
+        return PREFIX + "v=$VERSION${'$'}m=$MEMORY_KIB,t=$ITERATIONS,p=$PARALLELISM" +
+            "${'$'}${base64(salt)}${'$'}${base64(digest)}"
+    }
+
+    fun verify(plaintext: String, encoded: String): Boolean {
+        val parts = encoded.split('$')
+        if (parts.size != 6 || parts[1] != "argon2id" || parts[2] != "v=$VERSION") return false
+        val parameters = parts[3].split(',').mapNotNull {
+            val pair = it.split('=', limit = 2)
+            if (pair.size != 2) return false
+            pair[0] to pair[1]
+        }.toMap()
+        if (parameters.size != 3) return false
+        if (parameters["m"] != MEMORY_KIB.toString() ||
+            parameters["t"] != ITERATIONS.toString() ||
+            parameters["p"] != PARALLELISM.toString()
+        ) return false
+        val salt = decode(parts[4]) ?: return false
+        val expected = decode(parts[5]) ?: return false
+        if (salt.size != SALT_BYTES || expected.size != HASH_BYTES) return false
+        return MessageDigest.isEqual(expected, derive(plaintext, salt))
+    }
+
+    private fun derive(plaintext: String, salt: ByteArray): ByteArray {
+        val generator = Argon2BytesGenerator()
+        generator.init(
+            Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
+                .withVersion(Argon2Parameters.ARGON2_VERSION_13)
+                .withMemoryAsKB(MEMORY_KIB)
+                .withIterations(ITERATIONS)
+                .withParallelism(PARALLELISM)
+                .withSalt(salt)
+                .build(),
+        )
+        return ByteArray(HASH_BYTES).also { generator.generateBytes(plaintext.toByteArray(Charsets.UTF_8), it) }
+    }
+
+    private fun base64(bytes: ByteArray): String =
+        Base64.getEncoder().withoutPadding().encodeToString(bytes)
+
+    private fun decode(raw: String): ByteArray? = runCatching { Base64.getDecoder().decode(raw) }.getOrNull()
 }
 
 enum class BindMode {

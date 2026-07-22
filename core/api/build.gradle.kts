@@ -17,5 +17,6 @@ android {
 
 dependencies {
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.bcprov)
     testImplementation(libs.junit)
 }
