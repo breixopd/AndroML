@@ -75,6 +75,10 @@ data class ApiServerConfig(
 
 interface ApiInferenceGateway {
     fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta>
+
+    /** Returns model-backed vectors when the host can execute the requested artifact. */
+    suspend fun embeddings(request: EmbeddingsRequest): List<List<Double>> =
+        request.inputs.map(::deterministicEmbedding)
 }
 
 data class ChatMessage(
@@ -481,13 +485,17 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                     return@post
                 }
+                val vectors = runCatching { inference.embeddings(request) }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@post
+                }
                 val data = buildJsonArray {
-                    request.inputs.forEachIndexed { index, input ->
+                    vectors.forEachIndexed { index, vector ->
                         add(buildJsonObject {
                             put("object", "embedding")
                             put("index", index)
                             put("embedding", buildJsonArray {
-                                deterministicEmbedding(input).forEach { value -> add(JsonPrimitive(value)) }
+                                vector.forEach { value -> add(JsonPrimitive(value)) }
                             })
                         })
                     }

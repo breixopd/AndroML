@@ -7,6 +7,7 @@ import dev.androml.api.server.ApiInferenceGateway
 import dev.androml.api.server.ApiServerConfig
 import dev.androml.api.server.ChatCompletionRequest
 import dev.androml.api.server.ChatDelta
+import dev.androml.api.server.EmbeddingsRequest
 import dev.androml.api.server.ApiFeatureGateway
 import dev.androml.core.api.BindMode
 import dev.androml.core.database.ApiKeyRepository
@@ -20,6 +21,7 @@ import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
+import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.network.HuggingFaceArtifactDownloader
 import dev.androml.core.network.HuggingFaceModelClient
 import dev.androml.core.security.AndroidKeystoreSecretStore
@@ -42,6 +44,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import okhttp3.OkHttpClient
 
@@ -354,4 +358,65 @@ private class IsolatedRuntimeApiGateway(
             descriptor.close()
         }
     }
+
+    override suspend fun embeddings(request: EmbeddingsRequest): List<List<Double>> = withContext(Dispatchers.IO) {
+        val device = deviceProfileProvider()
+        val files = catalogRepository.filesForModelKey(request.model)
+            .filter { ModelFormatClassifier.supports(it.path, ModelWorkload.TextEmbedding) }
+        val modelFile = files.firstOrNull()
+            ?: throw IllegalArgumentException("requested model has no supported embedding artifact")
+        val artifactHash = modelFile.artifactSha256
+            ?: throw IllegalArgumentException("requested model artifact is not verified")
+        check(artifactStore.contains(artifactHash)) { "requested model artifact is missing" }
+        val runtimeId = RuntimeId.parse(ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+            ?: throw IllegalArgumentException("requested model format is unsupported"))
+        val descriptor = ParcelFileDescriptor.open(
+            artifactStore.fileFor(artifactHash),
+            ParcelFileDescriptor.MODE_READ_ONLY,
+        )
+        var session: OpenedInferenceSession? = null
+        try {
+            session = inferenceServiceClient.openSession(
+                model = ModelRequirements(
+                    workload = ModelWorkload.TextEmbedding,
+                    weightBytes = modelFile.sizeBytes,
+                    contextTokens = 512,
+                ),
+                configuration = RuntimeConfiguration(
+                    cpuThreads = device.cpuCoreCount.coerceIn(1, 8),
+                    contextTokens = 512,
+                    useAcceleration = false,
+                ),
+                runtimeId = runtimeId,
+                modelFile = descriptor,
+            )
+            request.inputs.map { input ->
+                val requestId = InferenceRequestId.parse("embed-${UUID.randomUUID()}")
+                val values = mutableListOf<Double>()
+                inferenceServiceClient.stream(
+                    session,
+                    InferenceRequest(requestId, input, maxNewTokens = 1, temperature = 0.0),
+                ).collect { event ->
+                    when (event) {
+                        is InferenceEvent.Token -> values += parseEmbeddingValues(event.text)
+                        is InferenceEvent.Failed -> error(event.safeMessage)
+                        is InferenceEvent.Cancelled -> error("embedding request was cancelled")
+                        is InferenceEvent.Started, is InferenceEvent.Completed -> Unit
+                    }
+                }
+                require(values.isNotEmpty()) { "embedding runtime returned no vector" }
+                values.take(4096)
+            }
+        } finally {
+            session?.let(inferenceServiceClient::closeSession)
+            descriptor.close()
+        }
+    }
 }
+
+private fun parseEmbeddingValues(raw: String): List<Double> = raw
+    .trim()
+    .removePrefix("[")
+    .removeSuffix("]")
+    .split(',')
+    .mapNotNull { it.trim().toDoubleOrNull() }

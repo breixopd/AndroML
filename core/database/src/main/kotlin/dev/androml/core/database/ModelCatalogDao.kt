@@ -28,6 +28,11 @@ abstract class ModelCatalogDao {
     )
     abstract suspend fun fileForModelKey(modelKey: String): ModelFileEntity?
 
+    @Query(
+        "SELECT * FROM model_files WHERE modelId || '@' || revision = :modelKey AND artifactSha256 IS NOT NULL ORDER BY path ASC",
+    )
+    abstract suspend fun filesForModelKey(modelKey: String): List<ModelFileEntity>
+
     @Query("SELECT artifactSha256 FROM model_files WHERE artifactSha256 IS NOT NULL")
     abstract suspend fun listVerifiedArtifactHashes(): List<String>
 
