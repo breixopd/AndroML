@@ -64,8 +64,11 @@ object SelfSignedTlsIdentityFactory {
             "TLS validity is out of bounds"
         }
         val provider = BouncyCastleProvider()
-        val keyPair = KeyPairGenerator.getInstance("EC", provider).apply {
-            initialize(java.security.spec.ECGenParameterSpec("secp256r1"), random)
+        // RSA keeps the generated self-signed identities interoperable with the JDK/Netty
+        // trust-path validator used by the LAN server.  Some JDK 21 providers reject otherwise
+        // valid BC ECDSA self-signatures during mutual-TLS client-certificate validation.
+        val keyPair = KeyPairGenerator.getInstance("RSA").apply {
+            initialize(2048, random)
         }.generateKeyPair()
         val notBefore = Date(nowEpochMillis - 60_000L)
         val notAfter = Date(nowEpochMillis + validityMillis)
@@ -96,8 +99,7 @@ object SelfSignedTlsIdentityFactory {
                     ),
                 ),
             )
-        val signer = JcaContentSignerBuilder("SHA256withECDSA")
-            .setProvider(provider)
+        val signer = JcaContentSignerBuilder("SHA256withRSA")
             .build(keyPair.private)
         val certificate = JcaX509CertificateConverter()
             .setProvider(provider)

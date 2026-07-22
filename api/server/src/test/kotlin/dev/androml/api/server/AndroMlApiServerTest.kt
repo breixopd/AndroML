@@ -18,9 +18,9 @@ import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeStringUtf8
 import io.ktor.server.testing.testApplication
 import java.util.Collections
+import java.io.IOException
 import java.net.ServerSocket
 import javax.net.ssl.HttpsURLConnection
-import javax.net.ssl.SSLException
 import java.net.URL
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -283,7 +283,9 @@ class AndroMlApiServerTest {
                 readTimeout = 5_000
             }
             try {
-                assertThrows(SSLException::class.java) { unpairedConnection.responseCode }
+                // Netty/JDK may surface a rejected client certificate as either an
+                // SSLException or the socket close that follows the failed handshake.
+                assertThrows(IOException::class.java) { unpairedConnection.responseCode }
             } finally {
                 unpairedConnection.disconnect()
             }
