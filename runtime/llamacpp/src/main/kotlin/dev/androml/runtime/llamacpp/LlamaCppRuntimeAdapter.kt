@@ -110,7 +110,9 @@ private class LlamaCppNative private constructor(private val handle: Long) {
     companion object {
         init { if (BuildConfig.LLAMA_CPP_BUNDLED) System.loadLibrary("androml_llamacpp") }
         fun open(path: String, contextTokens: Int, threads: Int): LlamaCppNative =
-            LlamaCppNative(nativeOpen(path, contextTokens, threads))
+            LlamaCppNative(nativeOpen(path, contextTokens, threads)).also {
+                check(it.handle != 0L) { "llama.cpp failed to load the GGUF model" }
+            }
 
         @JvmStatic private external fun nativeOpen(path: String, contextTokens: Int, threads: Int): Long
     }
