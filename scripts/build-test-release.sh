@@ -9,6 +9,7 @@ test -n "${ANDROML_RELEASE_KEY_PASSWORD:-}"
 
 gradle_args=(
     :app:assembleOssRelease
+    :app:bundleOssRelease
     --no-daemon
     --console=plain
     --stacktrace

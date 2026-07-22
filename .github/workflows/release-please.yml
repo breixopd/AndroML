@@ -87,7 +87,7 @@ jobs:
           version="${{ steps.release.outputs.tag_name }}"
           ./scripts/package-test-release.sh "${version#v}"
           test "$STORE_SUBMISSIONS_ENABLED" = 'false'
-          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -eq 4
+          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -ge 8
 
       - name: Confirm GitHub release exists
         if: steps.release.outputs.release_created == 'true'

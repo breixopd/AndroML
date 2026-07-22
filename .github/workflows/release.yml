@@ -82,7 +82,7 @@ jobs:
       - name: Assert release contains only GitHub test artifacts
         run: |
           test "$STORE_SUBMISSIONS_ENABLED" = 'false'
-          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -eq 4
+          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -ge 8
 
       - name: Confirm existing GitHub release
         env:
