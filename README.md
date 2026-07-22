@@ -9,6 +9,7 @@ This repository is public and in the owner-controlled phone-test period. The cur
 - Android 17 / API 37 target.
 - OSS and Play build flavors exist, but only the OSS flavor is distributed during testing.
 - The Home, Settings, Discover, Library, Playground, RAG, Workflows, API, and Cluster screens expose the complete local control surface.
+- Playground text generation can run locally or in Distributed mode, which routes the complete verified request to a paired mTLS node with bounded failover; the target node must already have the model artifact.
 - Hugging Face search and pinned-commit imports use bounded, resumable, SHA-256 verified downloads. Local RAG accepts text, HTML, PDF, EPUB, DOCX, XLSX, and PPTX sources with citations.
 - LiteRT is bundled for verified `.tflite` text embeddings, LiteRT-LM is bundled for text generation, the pinned llama.cpp b10079 arm64 CPU pack is bundled for `.gguf` text generation, ONNX Runtime Mobile is bundled for verified `.onnx`/`.ort` text embeddings, and ExecuTorch is bundled for `.pte` tensor embeddings. MLC remains unavailable until its model-specific compiled library pack is shipped; the app never substitutes a fake model result in production.
 - The API includes scoped bearer authentication, loopback/LAN mTLS gates, OpenAI chat/responses/embeddings routes, RAG, tools, workflows, agents, cluster status, and an OpenAPI document. Chat and embeddings resolve a verified artifact to its compatible bundled runtime; malformed runtime vector batches fail closed.
