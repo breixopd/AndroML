@@ -232,6 +232,16 @@ class ClusterController(
         advertisement.copy(capabilities = updatedPeer.capabilities)
     }
 
+    /** Refreshes the local capability snapshot exposed to paired peers. */
+    suspend fun refreshLocalCapabilities(): ClusterCapabilityAdvertisement = withContext(Dispatchers.IO) {
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        val advertisement = buildLocalAdvertisement(identity.fingerprint)
+        synchronized(this@ClusterController) {
+            if (server != null) localAdvertisement = advertisement
+        }
+        advertisement
+    }
+
     /** Refreshes eligible peers, then routes the complete request with bounded failover. */
     suspend fun executeBestInference(
         task: ClusterInferenceTask,

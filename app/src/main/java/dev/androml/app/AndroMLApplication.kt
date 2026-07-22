@@ -48,8 +48,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import okhttp3.OkHttpClient
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 
 class AndroMLApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            CLUSTER_HEARTBEAT_WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<ClusterHeartbeatWorker>(15, TimeUnit.MINUTES)
+                .setInitialDelay(15, TimeUnit.MINUTES)
+                .build(),
+        )
+    }
+
     val secretStore: SecretStore by lazy {
         AndroidKeystoreSecretStore(this)
     }
@@ -175,6 +190,10 @@ class AndroMLApplication : Application() {
         inferenceServiceClient.close()
         catalogDatabase.close()
         super.onTerminate()
+    }
+
+    private companion object {
+        const val CLUSTER_HEARTBEAT_WORK_NAME = "androml-cluster-heartbeat"
     }
 }
 
