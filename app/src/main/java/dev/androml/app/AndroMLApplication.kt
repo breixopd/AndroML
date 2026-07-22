@@ -194,6 +194,7 @@ class AndroMLApplication : Application() {
                 workflowController = workflowController,
                 workflowRepository = workflowDefinitionRepository,
                 clusterController = clusterController,
+                auditDao = catalogDatabase.toolAuditDao(),
             ),
         )
     }

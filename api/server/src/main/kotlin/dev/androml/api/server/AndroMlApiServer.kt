@@ -442,6 +442,22 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
+            apiGet("/audit/events") {
+                val call = this
+                if (!authorize(call, ApiScope.Admin, ApiRequestClass.ReadOnly)) return@apiGet
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
+                val events = runCatching { features.listAuditEvents(limit) }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiGet
+                }
+                call.respondText(
+                    Json.encodeToString(buildJsonObject {
+                        put("object", "list")
+                        put("data", buildJsonArray { events.forEach { add(it.toJson()) } })
+                    }),
+                    ContentType.Application.Json,
+                )
+            }
             apiPost("/chat/completions") {
                 val call = this
                 if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
@@ -696,6 +712,17 @@ private fun ApiClusterStatus.toJson() = buildJsonObject {
     put("paired_peer_count", pairedPeerCount)
 }
 
+private fun ApiAuditEvent.toJson() = buildJsonObject {
+    put("event_id", eventId)
+    put("event_type", eventType)
+    put("tool_id", toolId)
+    put("side_effect", sideEffect)
+    put("argument_hash", argumentHash)
+    resultHash?.let { put("result_hash", it) }
+    put("success", success)
+    put("occurred_at_epoch_millis", occurredAtEpochMillis)
+}
+
 private suspend fun ApplicationCall.respondApiFeatureError(error: Throwable) {
     val status = when (error) {
         is RequestBodyTooLargeException -> HttpStatusCode.PayloadTooLarge
@@ -763,6 +790,7 @@ private val OPENAPI_DOCUMENT: String = Json.encodeToString(buildJsonObject {
             "/v1/workflows/runs" to "post",
             "/v1/agents" to "get",
             "/v1/cluster" to "get",
+            "/v1/audit/events" to "get",
         ).flatMap { (path, method) ->
             if (path.startsWith("/v1/")) {
                 listOf(path to method, path.replaceFirst("/v1", "/api/v1") to method)

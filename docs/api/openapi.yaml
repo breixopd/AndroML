@@ -76,6 +76,10 @@ paths:
     get:
       responses:
         '200': { description: Local cluster status }
+  /v1/audit/events:
+    get:
+      responses:
+        '200': { description: Hash-only administrative audit events }
   /api/v1/models:
     $ref: '#/paths/~1v1~1models'
   /api/v1/chat/completions:
@@ -98,6 +102,8 @@ paths:
     $ref: '#/paths/~1v1~1agents'
   /api/v1/cluster:
     $ref: '#/paths/~1v1~1cluster'
+  /api/v1/audit/events:
+    $ref: '#/paths/~1v1~1audit~1events'
 components:
   securitySchemes:
     bearerAuth:

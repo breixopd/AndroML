@@ -117,6 +117,17 @@ data class ApiClusterStatus(
     val pairedPeerCount: Int,
 )
 
+data class ApiAuditEvent(
+    val eventId: String,
+    val eventType: String,
+    val toolId: String,
+    val sideEffect: String,
+    val argumentHash: String,
+    val resultHash: String?,
+    val success: Boolean,
+    val occurredAtEpochMillis: Long,
+)
+
 class ApiFeatureUnavailableException : IllegalStateException("API feature is not enabled")
 
 interface ApiFeatureGateway {
@@ -133,6 +144,8 @@ interface ApiFeatureGateway {
     suspend fun listAgents(): List<ApiAgentInfo> = unavailable()
 
     suspend fun clusterStatus(): ApiClusterStatus = unavailable()
+
+    suspend fun listAuditEvents(limit: Int = 100): List<ApiAuditEvent> = unavailable()
 
     companion object {
         val Empty: ApiFeatureGateway = object : ApiFeatureGateway {}

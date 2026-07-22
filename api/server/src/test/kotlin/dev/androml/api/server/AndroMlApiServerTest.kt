@@ -34,6 +34,7 @@ class AndroMlApiServerTest {
     fun featureRoutesUseIndependentScopesAndReturnBoundedTypedResults() = testApplication {
         val ragKey = ApiKeyCodec.generate("rag", setOf(ApiScope.RagRead), nowEpochMillis = 1L)
         val toolKey = ApiKeyCodec.generate("tools", setOf(ApiScope.Tools), nowEpochMillis = 1L)
+        val adminKey = ApiKeyCodec.generate("admin", setOf(ApiScope.Admin), nowEpochMillis = 1L)
         val featureGateway = object : ApiFeatureGateway {
             override suspend fun ragSearch(request: ApiRagSearchRequest): ApiRagSearchResponse =
                 ApiRagSearchResponse(listOf(ApiRagResult("node-local", "Notes", "local", "answer", 0.9)))
@@ -41,10 +42,14 @@ class AndroMlApiServerTest {
             override suspend fun listTools(): List<ApiToolInfo> = listOf(
                 ApiToolInfo("device.info", "Device information", "Reads local capability data", "Read", emptyList()),
             )
+
+            override suspend fun listAuditEvents(limit: Int): List<ApiAuditEvent> = listOf(
+                ApiAuditEvent("event-1", "tool.invocation", "device.info", "Read", "a".repeat(64), null, true, 1L),
+            )
         }
         val server = AndroMlApiServer(
             config = ApiServerConfig(),
-            apiKeys = { listOf(ragKey.record, toolKey.record) },
+            apiKeys = { listOf(ragKey.record, toolKey.record, adminKey.record) },
             models = { listOf("fake") },
             inference = emptyInferenceGateway(),
             features = featureGateway,
@@ -77,6 +82,12 @@ class AndroMlApiServerTest {
         }
         assertEquals(HttpStatusCode.OK, nativeTools.status)
         assertTrue(nativeTools.bodyAsText().contains("device.info"))
+
+        val audit = client.get("/api/v1/audit/events?limit=10") {
+            header(HttpHeaders.Authorization, "Bearer ${adminKey.plaintextToken}")
+        }
+        assertEquals(HttpStatusCode.OK, audit.status)
+        assertTrue(audit.bodyAsText().contains("event-1"))
     }
 
     @Test

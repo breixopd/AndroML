@@ -1,6 +1,7 @@
 package dev.androml.app
 
 import dev.androml.api.server.ApiAgentInfo
+import dev.androml.api.server.ApiAuditEvent
 import dev.androml.api.server.ApiClusterStatus
 import dev.androml.api.server.ApiFeatureGateway
 import dev.androml.api.server.ApiRagResult
@@ -14,6 +15,7 @@ import dev.androml.api.server.ApiWorkflowRunRequest
 import dev.androml.api.server.ApiWorkflowRunResponse
 import dev.androml.cluster.core.ClusterRagSearchTask
 import dev.androml.core.database.WorkflowDefinitionRepository
+import dev.androml.core.database.ToolAuditDao
 import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.tools.ToolId
@@ -25,6 +27,7 @@ class LocalApiFeatureGateway(
     private val workflowController: WorkflowController,
     private val workflowRepository: WorkflowDefinitionRepository,
     private val clusterController: ClusterController,
+    private val auditDao: ToolAuditDao,
 ) : ApiFeatureGateway {
     override suspend fun ragSearch(request: ApiRagSearchRequest): ApiRagSearchResponse {
         val results = clusterController.searchDistributedRag(
@@ -123,6 +126,22 @@ class LocalApiFeatureGateway(
             ClusterControllerState.Disabled -> ApiClusterStatus(false, nodeId, 0)
             is ClusterControllerState.Running -> ApiClusterStatus(true, nodeId, state.pairedPeerCount)
             is ClusterControllerState.Failed -> ApiClusterStatus(false, nodeId, 0)
+        }
+    }
+
+    override suspend fun listAuditEvents(limit: Int): List<ApiAuditEvent> {
+        require(limit in 1..500) { "audit limit is out of bounds" }
+        return auditDao.recent(limit).map { event ->
+            ApiAuditEvent(
+                eventId = event.eventId,
+                eventType = event.eventType,
+                toolId = event.toolId,
+                sideEffect = event.sideEffect,
+                argumentHash = event.argumentHash,
+                resultHash = event.resultHash,
+                success = event.success,
+                occurredAtEpochMillis = event.occurredAtEpochMillis,
+            )
         }
     }
 }
