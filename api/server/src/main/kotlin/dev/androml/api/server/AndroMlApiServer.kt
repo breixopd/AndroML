@@ -78,7 +78,7 @@ interface ApiInferenceGateway {
 
     /** Returns model-backed vectors when the host can execute the requested artifact. */
     suspend fun embeddings(request: EmbeddingsRequest): List<List<Double>> =
-        request.inputs.map(::deterministicEmbedding)
+        throw IllegalStateException("embedding runtime is not configured")
 }
 
 data class ChatMessage(
@@ -716,19 +716,6 @@ private fun JsonObject.intOrDefault(name: String, default: Int): Int =
 
 private fun JsonObject.doubleOrDefault(name: String, default: Double): Double =
     this[name]?.jsonPrimitive?.doubleOrNull ?: default
-
-private fun deterministicEmbedding(text: String): List<Double> {
-    val vector = DoubleArray(64)
-    text.lowercase().split(Regex("[^\\p{L}\\p{N}]+"))
-        .filter(String::isNotBlank)
-        .forEach { token ->
-            val hash = token.hashCode()
-            val index = (hash and Int.MAX_VALUE) % vector.size
-            vector[index] += if (hash and 1 == 0) 1.0 else -1.0
-        }
-    val norm = kotlin.math.sqrt(vector.sumOf { it * it }).takeIf { it > 0.0 } ?: 1.0
-    return vector.map { it / norm }
-}
 
 private const val MAX_EMBEDDING_DIMENSION = 4096
 
