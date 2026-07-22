@@ -12,7 +12,6 @@ import android.os.ParcelFileDescriptor
 import android.os.RemoteException
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
-import dev.androml.runtime.api.FakeRuntimeAdapter
 import dev.androml.runtime.api.InferenceErrorCode
 import dev.androml.runtime.api.InferenceEvent
 import dev.androml.runtime.api.InferenceRequest
@@ -20,7 +19,7 @@ import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
-import dev.androml.runtime.litertlm.LiteRtLmRuntimeAdapter
+import dev.androml.runtime.api.RuntimePackCatalog
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
 import kotlinx.coroutines.CancellationException
@@ -37,6 +36,10 @@ class InferenceProcessService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val sessions: ConcurrentMap<String, ActiveSession> = ConcurrentHashMap()
     private val messenger = Messenger(InferenceHandler())
+
+    /** The service owns adapter construction so callers cannot inject executable code. */
+    private fun registry(modelFile: ParcelFileDescriptor): RuntimeRegistry =
+        RuntimeRegistry("/proc/self/fd/${modelFile.fd}")
 
     override fun onBind(intent: Intent?): IBinder = messenger.binder
 
@@ -107,17 +110,8 @@ class InferenceProcessService : Service() {
             )
             val session = try {
                 withTimeout(60_000L) {
-                    when (runtimeId.value) {
-                        "fake" -> {
-                            modelFile?.close()
-                            FakeRuntimeAdapter().openSession(model, configuration)
-                        }
-                        "litertlm" -> {
-                            val descriptor = modelFile ?: throw IllegalArgumentException("model file is required")
-                            LiteRtLmRuntimeAdapter("/proc/self/fd/${descriptor.fd}").openSession(model, configuration)
-                        }
-                        else -> throw IllegalArgumentException("runtime is not installed")
-                    }
+                    val descriptor = modelFile ?: throw IllegalArgumentException("model file is required")
+                    registry(descriptor).adapterFor(runtimeId).openSession(model, configuration)
                 }
             } catch (_: CancellationException) {
                 modelFile?.close()
@@ -206,7 +200,10 @@ class InferenceProcessService : Service() {
         send(replyTo, InferenceServiceProtocol.EVENT_HEALTH, Bundle().apply {
             putInt(InferenceServiceProtocol.VERSION_KEY, InferenceServiceProtocol.PROTOCOL_VERSION)
             putBoolean(InferenceServiceProtocol.READY_KEY, true)
-            putString(InferenceServiceProtocol.RUNTIME_ID_KEY, "litertlm")
+            putStringArrayList(
+                InferenceServiceProtocol.RUNTIME_IDS_KEY,
+                RuntimePackCatalog.production.map { it.descriptor.id.value }.toCollection(ArrayList()),
+            )
         })
     }
 

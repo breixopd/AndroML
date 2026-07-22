@@ -16,3 +16,4 @@ externalNativeBuild/
 *.env
 *.env.*
 docs/superpowers/plans/2026-07-18-androml-v1-implementation-plan.md
+.kotlin/

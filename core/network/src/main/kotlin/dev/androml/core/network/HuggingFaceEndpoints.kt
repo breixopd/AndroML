@@ -46,6 +46,14 @@ class HuggingFaceEndpoints private constructor(
                 "?revision=${reference.revision.value}",
         )
 
+    fun searchModels(query: String, limit: Int = 20): URI {
+        require(query.isNotBlank() && query.length <= 256) { "search query is invalid" }
+        require(limit in 1..50) { "search limit is out of bounds" }
+        return URI.create(
+            "$origin/api/models?search=${encodeQuery(query)}&limit=$limit&full=false",
+        )
+    }
+
     fun fileDownload(
         reference: HuggingFaceModelReference,
         descriptor: HuggingFaceFileDescriptor,
@@ -70,6 +78,19 @@ class HuggingFaceEndpoints private constructor(
         }
     }
 
+    private fun encodeQuery(value: String): String = buildString {
+        value.toByteArray(Charsets.UTF_8).forEach { byte ->
+            val code = byte.toInt() and 0xff
+            if (code.toChar() in QUERY_SAFE_ASCII) {
+                append(code.toChar())
+            } else {
+                append('%')
+                append(HEX[code ushr 4])
+                append(HEX[code and 0x0f])
+            }
+        }
+    }
+
     companion object {
         private const val DEFAULT_BASE_URL = "https://huggingface.co"
         private const val OFFICIAL_HOST = "huggingface.co"
@@ -81,6 +102,7 @@ class HuggingFaceEndpoints private constructor(
             addAll('a'..'z')
             addAll(charArrayOf('-', '.', '_', '~').toList())
         }
+        private val QUERY_SAFE_ASCII = SAFE_ASCII + setOf(' ', '+').filter { it != ' ' }
 
         internal fun forTesting(baseUri: URI): HuggingFaceEndpoints =
             HuggingFaceEndpoints(baseUri, allowTestOrigin = true)

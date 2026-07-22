@@ -2,6 +2,7 @@ package dev.androml.core.network
 
 import dev.androml.core.model.HuggingFaceModelReference
 import dev.androml.core.model.HuggingFaceRepositoryMetadata
+import dev.androml.core.model.HuggingFaceSearchHit
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import okhttp3.Call
@@ -38,7 +39,56 @@ class HuggingFaceModelClient(
     private val callFactory: Call.Factory,
     private val endpoints: HuggingFaceEndpoints = HuggingFaceEndpoints(),
     private val metadataParser: HuggingFaceMetadataParser = HuggingFaceMetadataParser(),
+    private val searchParser: HuggingFaceSearchParser = HuggingFaceSearchParser(),
 ) {
+    fun searchModels(
+        query: String,
+        limit: Int = 20,
+        accessToken: String? = null,
+    ): List<HuggingFaceSearchHit> {
+        val request = Request.Builder()
+            .url(endpoints.searchModels(query, limit).toString())
+            .header("Accept", "application/json")
+            .apply {
+                accessToken?.takeIf { it.isNotBlank() }?.let { token ->
+                    header("Authorization", "Bearer $token")
+                }
+            }
+            .build()
+        val response = try {
+            callFactory.newCall(request).execute()
+        } catch (error: IOException) {
+            throw HuggingFaceNetworkException(
+                code = HuggingFaceNetworkError.Transport,
+                message = "Hugging Face search could not be completed",
+                cause = error,
+            )
+        }
+        response.use {
+            if (!response.isSuccessful) {
+                throw huggingFaceResponseException(response.code, response.header("Retry-After"))
+            }
+            val body = response.body
+            if (body.contentLength() > MAX_SEARCH_RESPONSE_BYTES) {
+                throw HuggingFaceNetworkException(
+                    code = HuggingFaceNetworkError.ResponseTooLarge,
+                    message = "Hugging Face search response exceeds the safety limit",
+                    httpStatus = response.code,
+                )
+            }
+            return try {
+                searchParser.parse(readBounded(body, MAX_SEARCH_RESPONSE_BYTES))
+            } catch (error: HuggingFaceMetadataException) {
+                throw HuggingFaceNetworkException(
+                    code = HuggingFaceNetworkError.InvalidMetadata,
+                    message = "Hugging Face search response failed validation",
+                    httpStatus = response.code,
+                    cause = error,
+                )
+            }
+        }
+    }
+
     fun fetchMetadata(
         reference: HuggingFaceModelReference,
         accessToken: String? = null,
@@ -77,7 +127,7 @@ class HuggingFaceModelClient(
                 )
             }
 
-            val bodyText = readBounded(body)
+            val bodyText = readBounded(body, MAX_METADATA_RESPONSE_BYTES)
             return try {
                 metadataParser.parse(reference, bodyText)
             } catch (error: HuggingFaceMetadataException) {
@@ -91,7 +141,7 @@ class HuggingFaceModelClient(
         }
     }
 
-    private fun readBounded(body: ResponseBody): String {
+    private fun readBounded(body: ResponseBody, maxBytes: Long): String {
         val output = ByteArrayOutputStream(INITIAL_BUFFER_BYTES)
         val buffer = ByteArray(READ_BUFFER_BYTES)
         var totalBytes = 0L
@@ -100,7 +150,7 @@ class HuggingFaceModelClient(
                 val read = input.read(buffer)
                 if (read == -1) break
                 totalBytes += read
-                if (totalBytes > MAX_METADATA_RESPONSE_BYTES) {
+                if (totalBytes > maxBytes) {
                     throw HuggingFaceNetworkException(
                         code = HuggingFaceNetworkError.ResponseTooLarge,
                         message = "Hugging Face metadata response exceeds the safety limit",
@@ -114,6 +164,7 @@ class HuggingFaceModelClient(
 
     private companion object {
         const val MAX_METADATA_RESPONSE_BYTES = 2L * 1024L * 1024L
+        const val MAX_SEARCH_RESPONSE_BYTES = 2L * 1024L * 1024L
         const val INITIAL_BUFFER_BYTES = 8 * 1024
         const val READ_BUFFER_BYTES = 16 * 1024
     }

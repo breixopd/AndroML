@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
@@ -25,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -35,6 +38,7 @@ import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.DeterministicChunker
 import dev.androml.core.rag.RagDocument
 import dev.androml.core.rag.RetrievalQuery
+import dev.androml.core.rag.RagImportPipeline
 import dev.androml.core.rag.TextChunk
 import java.io.ByteArrayInputStream
 import java.security.MessageDigest
@@ -64,6 +68,37 @@ fun RagScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        message = null
+        scope.launch {
+            try {
+                val imported = withContext(Dispatchers.IO) {
+                    val resolver = context.contentResolver
+                    val fileName = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { "imported-document" }
+                        ?: "imported-document"
+                    val mimeType = resolver.getType(uri)
+                    resolver.openInputStream(uri)?.use { input ->
+                        RagImportPipeline().import(fileName, mimeType, input)
+                    } ?: error("Android could not open the selected document")
+                }
+                title = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { title } ?: title
+                sourceLabel = "content://$uri"
+                documentText = imported.text
+                message = "Imported ${imported.format.name.lowercase(Locale.ROOT)} (${formatImportedBytes(imported.byteSize)}); review before indexing"
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "Document could not be imported"
+            } finally {
+                busy = false
+            }
+        }
+    }
 
     if (selectedCollectionId == null && collections.isNotEmpty()) {
         selectedCollectionId = collections.first().collectionId
@@ -242,6 +277,25 @@ fun RagScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Index a local note", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(8.dp))
+                    TextButton(
+                        onClick = {
+                            filePicker.launch(
+                                arrayOf(
+                                    "text/*",
+                                    "application/pdf",
+                                    "text/html",
+                                    "application/epub+zip",
+                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                ),
+                            )
+                        },
+                        enabled = !busy,
+                    ) {
+                        Text("Import a local file")
+                    }
+                    Spacer(Modifier.height(4.dp))
                     OutlinedTextField(
                         value = title,
                         onValueChange = { title = it.take(512) },
@@ -336,3 +390,9 @@ private data class RagScreenResult(
 private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
     .digest(bytes)
     .joinToString("") { byte -> "%02x".format(Locale.ROOT, byte) }
+
+private fun formatImportedBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> "%.1f MiB".format(Locale.ROOT, bytes / 1024.0 / 1024.0)
+    bytes >= 1024L -> "%.1f KiB".format(Locale.ROOT, bytes / 1024.0)
+    else -> "$bytes B"
+}

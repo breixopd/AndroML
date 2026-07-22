@@ -64,6 +64,7 @@ import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.ReleasePolicy
 import dev.androml.core.network.HuggingFaceEndpoints
 import dev.androml.core.network.HuggingFaceModelClient
+import dev.androml.core.model.HuggingFaceSearchHit
 import dev.androml.core.security.SecretStore
 import dev.androml.runtime.api.InferenceEvent
 import dev.androml.runtime.api.InferenceRequest
@@ -72,8 +73,7 @@ import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
-import dev.androml.runtime.api.FakeRuntimeAdapter
-import dev.androml.runtime.litertlm.LiteRtLmRuntimeDescriptor
+import dev.androml.runtime.api.RuntimePackCatalog
 import dev.androml.optimizer.AutoOptimizer
 import java.util.Locale
 import java.util.UUID
@@ -104,7 +104,7 @@ private fun AndroMLTheme(content: @Composable () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AndroMLApp() {
-    val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "Workflows", "API", "Cluster")
+    val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "Workflows", "API", "Cluster", "Settings")
     var selectedDestination by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val application = context.applicationContext as AndroMLApplication
@@ -123,6 +123,7 @@ private fun AndroMLApp() {
     val clusterPeerRepository = application.clusterPeerRepository
     val workflowController = application.workflowController
     val workflowDefinitionRepository = application.workflowDefinitionRepository
+    val apiState by apiController.state.collectAsState()
 
     Scaffold(
         topBar = {
@@ -157,6 +158,7 @@ private fun AndroMLApp() {
                 releasePolicy = ReleasePolicy.testPeriod(),
                 deviceProfile = deviceProfile,
                 modelCount = catalogModels.size,
+                bundledRuntimeCount = RuntimePackCatalog.bundled.size,
             )
         } else if (selectedDestination == 1) {
             PlaygroundScreen(
@@ -202,12 +204,21 @@ private fun AndroMLApp() {
                 tlsIdentityStore = application.apiTlsIdentityStore,
                 clientCertificateStore = application.apiClientCertificateStore,
             )
-        } else {
+        } else if (selectedDestination == 7) {
             ClusterScreen(
                 modifier = Modifier.padding(paddingValues),
                 repository = clusterPeerRepository,
                 tlsIdentityStore = application.clusterTlsIdentityStore,
                 controller = application.clusterController,
+            )
+        } else {
+            SettingsScreen(
+                modifier = Modifier.padding(paddingValues),
+                context = context,
+                deviceProfile = deviceProfile,
+                releasePolicy = ReleasePolicy.testPeriod(),
+                runtimePacks = RuntimePackCatalog.production,
+                apiState = apiState,
             )
         }
     }
@@ -251,17 +262,17 @@ private fun PlaygroundScreen(
         optimizer.select(
             device = deviceProfile,
             model = model,
-            runtimes = if (selectedFile == null) {
-                listOf(FakeRuntimeAdapter().descriptor)
+        runtimes = if (selectedFile == null) {
+                emptyList()
             } else {
-                listOf(LiteRtLmRuntimeDescriptor.value)
+                RuntimePackCatalog.bundled.map { it.descriptor }
             },
         )
     }
 
     LaunchedEffect(serviceClient) {
         status = try {
-            if (serviceClient.health()) "Isolated runtime ready · LiteRT-LM CPU + fake preview" else "Runtime service is not ready"
+            if (serviceClient.health()) "Isolated runtime ready · bundled packs only" else "Runtime service is not ready"
         } catch (_: Throwable) {
             "Runtime service is unavailable"
         }
@@ -292,11 +303,7 @@ private fun PlaygroundScreen(
                         contextTokens = 2048,
                         useAcceleration = optimization.configuration?.useAcceleration ?: false,
                     ),
-                    runtimeId = if (selectedFile == null) {
-                        RuntimeId.parse("fake")
-                    } else {
-                        RuntimeId.parse("litertlm")
-                    },
+                    runtimeId = RuntimeId.parse("litertlm"),
                     modelFile = selectedFile?.artifactSha256?.let { hash ->
                         ParcelFileDescriptor.open(
                             artifactStore.fileFor(hash),
@@ -341,7 +348,7 @@ private fun PlaygroundScreen(
         item {
             Text("Playground", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "Run a verified .litertlm model through the isolated CPU runtime, or use the deterministic fake preview when no model is installed.",
+                "Run a verified model through a bundled isolated runtime. AndroML never substitutes a fake result for a real model.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -351,7 +358,7 @@ private fun PlaygroundScreen(
                     Text("Installed text models", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     if (runnableFiles.isEmpty()) {
-                        Text("No verified .litertlm artifact is installed. Discover one from Hugging Face first.")
+                        Text("No verified .litertlm artifact is installed. Discover and verify one from Hugging Face first.")
                     } else {
                         Text("Select a content-addressed model artifact:", style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(6.dp))
@@ -383,7 +390,7 @@ private fun PlaygroundScreen(
                     AssistChip(
                         onClick = {},
                         label = {
-                            Text(if (selectedFile == null) "Fake preview · test only" else "LiteRT-LM · CPU")
+                            Text(if (selectedFile == null) "No runtime selected" else "LiteRT-LM · CPU")
                         },
                     )
                 }
@@ -438,6 +445,7 @@ private fun HomeScreen(
     releasePolicy: ReleasePolicy,
     deviceProfile: DeviceProfile,
     modelCount: Int,
+    bundledRuntimeCount: Int,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -479,8 +487,8 @@ private fun HomeScreen(
         item {
             StatusCard(
                 title = "Runtime packs",
-                value = "Optimizer contracts ready",
-                detail = "No native runtime pack is installed yet; impossible device/model combinations are rejected first.",
+                value = if (bundledRuntimeCount == 0) "No runtime packs bundled" else "$bundledRuntimeCount runtime pack bundled",
+                detail = "Only verified, bundled engines can run. Open Settings for the full engine compatibility matrix.",
             )
         }
         item {
@@ -518,6 +526,10 @@ private fun DiscoverScreen(
     var metadataJob by remember { mutableStateOf<Job?>(null) }
     var metadataRequestId by remember { mutableIntStateOf(0) }
     var activeWorkId by remember { mutableStateOf<UUID?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<HuggingFaceSearchHit>>(emptyList()) }
+    var searchMessage by remember { mutableStateOf<String?>(null) }
+    var searching by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     LaunchedEffect(secretStore) {
         try {
@@ -709,6 +721,30 @@ private fun DiscoverScreen(
         }
     }
 
+    fun searchHub() {
+        if (searchQuery.isBlank()) {
+            searchMessage = "Enter a model name or task first"
+            return
+        }
+        searching = true
+        searchMessage = null
+        scope.launch {
+            try {
+                searchResults = withContext(Dispatchers.IO) {
+                    modelClient.searchModels(searchQuery.trim(), accessToken = accessToken.trim().takeIf(String::isNotEmpty))
+                }
+                searchMessage = if (searchResults.isEmpty()) "No public models matched this search" else null
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                searchResults = emptyList()
+                searchMessage = huggingFaceUserMessage(error)
+            } finally {
+                searching = false
+            }
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -720,6 +756,69 @@ private fun DiscoverScreen(
                 "Resolve a repository to an immutable commit, inspect its signed metadata, then download only files with a verified SHA-256.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Search the Hub", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it.take(256) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Model or task") },
+                        placeholder = { Text("llama, text-generation, whisper…") },
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = ::searchHub, enabled = !searching, modifier = Modifier.fillMaxWidth()) {
+                        if (searching) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.width(20.dp).height(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text("Search Hugging Face")
+                    }
+                    searchMessage?.let { message ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(message, style = MaterialTheme.typography.bodySmall)
+                    }
+                    searchResults.forEach { result ->
+                        Spacer(Modifier.height(8.dp))
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(result.modelId, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    buildString {
+                                        result.pipelineTag?.let { append(it) }
+                                        result.downloads?.let { if (isNotEmpty()) append(" · "); append("$it downloads") }
+                                        result.likes?.let { if (isNotEmpty()) append(" · "); append("$it likes") }
+                                    }.ifBlank { "Public model" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                TextButton(
+                                    onClick = {
+                                        val revision = result.revision
+                                        if (revision == null) {
+                                            searchMessage = "This result has no immutable commit; enter a SHA manually."
+                                        } else {
+                                            importState = HuggingFaceImportState(
+                                                modelId = result.modelId,
+                                                revision = revision,
+                                            )
+                                            clearResolvedSource()
+                                            searchMessage = "Pinned ${result.modelId} at ${revision.take(12)}…"
+                                        }
+                                    },
+                                ) { Text("Use immutable revision") }
+                            }
+                        }
+                    }
+                }
+            }
         }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {

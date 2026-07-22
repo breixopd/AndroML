@@ -39,6 +39,7 @@ object InferenceServiceProtocol {
     const val ERROR_CODE_KEY = "error_code"
     const val SAFE_MESSAGE_KEY = "safe_message"
     const val READY_KEY = "ready"
+    const val RUNTIME_IDS_KEY = "runtime_ids"
 
     const val MAX_MODEL_WORKLOAD_CHARS = 64
     const val MAX_PROMPT_CHARS = 64 * 1024

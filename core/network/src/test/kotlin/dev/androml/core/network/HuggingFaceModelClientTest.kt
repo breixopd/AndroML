@@ -62,6 +62,22 @@ class HuggingFaceModelClientTest {
     }
 
     @Test
+    fun searchesModelsWithBoundedQueryAndBearerToken() {
+        server.start()
+        server.enqueue(MockResponse(body = "[{\"id\":\"org/tiny-model\",\"sha\":\"0123456789abcdef0123456789abcdef01234567\"}]"))
+
+        val hits = HuggingFaceModelClient(
+            callFactory = httpClient,
+            endpoints = HuggingFaceEndpoints.forTesting(server.url("/").toUri()),
+        ).searchModels("tiny model", accessToken = "hf_search_token")
+        val request = server.takeRequest(1, TimeUnit.SECONDS)
+
+        assertEquals("/api/models?search=tiny%20model&limit=20&full=false", request?.target)
+        assertEquals("Bearer hf_search_token", request?.headers?.get("Authorization"))
+        assertEquals("org/tiny-model", hits.single().modelId)
+    }
+
+    @Test
     fun mapsUnauthorizedResponsesWithoutExposingResponseBody() {
         server.start()
         server.enqueue(MockResponse(code = 401, body = "token must not appear in an exception"))

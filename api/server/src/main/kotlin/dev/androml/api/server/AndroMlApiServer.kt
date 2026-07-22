@@ -170,6 +170,54 @@ data class ChatDelta(
     }
 }
 
+data class EmbeddingsRequest(
+    val model: String,
+    val inputs: List<String>,
+) {
+    init {
+        require(model.isNotBlank() && model.length <= 256) { "model is invalid" }
+        require(inputs.isNotEmpty() && inputs.size <= 128) { "input is invalid" }
+        require(inputs.all { it.length <= 64 * 1024 }) { "input is too large" }
+    }
+
+    companion object {
+        fun parse(root: JsonObject): EmbeddingsRequest {
+            val input = root["input"] ?: throw IllegalArgumentException("input is missing")
+            val values = when {
+                input is JsonPrimitive -> listOf(input.contentOrNull ?: throw IllegalArgumentException("input is invalid"))
+                input is JsonArray -> input.map { it.jsonPrimitive.contentOrNull ?: throw IllegalArgumentException("input is invalid") }
+                else -> throw IllegalArgumentException("input is invalid")
+            }
+            return EmbeddingsRequest(root.string("model"), values)
+        }
+    }
+}
+
+data class ResponsesRequest(
+    val model: String,
+    val input: String,
+    val stream: Boolean,
+    val maxTokens: Int,
+    val temperature: Double,
+) {
+    init {
+        require(model.isNotBlank() && model.length <= 256) { "model is invalid" }
+        require(input.isNotBlank() && input.length <= ChatCompletionRequest.MAX_MESSAGE_CHARS) { "input is invalid" }
+        require(maxTokens in 1..8192) { "max_output_tokens is out of bounds" }
+        require(temperature.isFinite() && temperature in 0.0..2.0) { "temperature is out of bounds" }
+    }
+
+    companion object {
+        fun parse(root: JsonObject): ResponsesRequest = ResponsesRequest(
+            model = root.string("model"),
+            input = root.string("input"),
+            stream = root.booleanOrDefault("stream", false),
+            maxTokens = root.intOrDefault("max_output_tokens", root.intOrDefault("max_tokens", 256)),
+            temperature = root.doubleOrDefault("temperature", 0.7),
+        )
+    }
+}
+
 class LanMtlsRequiredException : IllegalStateException(
     "LAN API binding is disabled until a verified mTLS transport is configured",
 )
@@ -230,6 +278,9 @@ class AndroMlApiServer(
         install(CallLogging)
         install(ContentNegotiation) { json(Json { explicitNulls = false }) }
         routing {
+            get("/openapi.json") {
+                call.respondText(OPENAPI_DOCUMENT, ContentType.Application.Json)
+            }
             get("/healthz") {
                 call.respondText(
                     "{\"status\":\"ok\",\"bind_mode\":\"${config.bindMode.name.lowercase()}\"}",
@@ -422,6 +473,90 @@ class AndroMlApiServer(
                     call.respondText(Json.encodeToString(response), ContentType.Application.Json)
                 }
             }
+            post("/v1/embeddings") {
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
+                val request = runCatching {
+                    EmbeddingsRequest.parse(call.receiveBoundedJson(config.maxRequestBodyBytes))
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@post
+                }
+                val data = buildJsonArray {
+                    request.inputs.forEachIndexed { index, input ->
+                        add(buildJsonObject {
+                            put("object", "embedding")
+                            put("index", index)
+                            put("embedding", buildJsonArray {
+                                deterministicEmbedding(input).forEach { value -> add(JsonPrimitive(value)) }
+                            })
+                        })
+                    }
+                }
+                call.respondText(
+                    Json.encodeToString(buildJsonObject {
+                        put("object", "list")
+                        put("data", data)
+                        put("model", request.model)
+                        put("usage", buildJsonObject {
+                            put("prompt_tokens", request.inputs.sumOf(::estimateTokens))
+                            put("total_tokens", request.inputs.sumOf(::estimateTokens))
+                        })
+                    }),
+                    ContentType.Application.Json,
+                )
+            }
+            post("/v1/responses") {
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
+                val request = runCatching {
+                    ResponsesRequest.parse(call.receiveBoundedJson(config.maxRequestBodyBytes))
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@post
+                }
+                val chatRequest = ChatCompletionRequest(
+                    model = request.model,
+                    messages = listOf(ChatMessage("user", request.input)),
+                    stream = request.stream,
+                    maxTokens = request.maxTokens,
+                    temperature = request.temperature,
+                )
+                if (request.stream) {
+                    call.respondTextWriter(ContentType.Text.EventStream) {
+                        inference.streamChat(chatRequest).collect { delta ->
+                            write("data: ${Json.encodeToString(buildJsonObject {
+                                put("type", "response.output_text.delta")
+                                put("delta", delta.text)
+                                delta.finishReason?.let { put("finish_reason", it) }
+                            })}\n\n")
+                            flush()
+                        }
+                        write("data: [DONE]\n\n")
+                        flush()
+                    }
+                } else {
+                    val output = buildString { inference.streamChat(chatRequest).collect { append(it.text) } }
+                    call.respondText(
+                        Json.encodeToString(buildJsonObject {
+                            put("id", "resp-androml")
+                            put("object", "response")
+                            put("model", request.model)
+                            put("output", buildJsonArray {
+                                add(buildJsonObject {
+                                    put("type", "message")
+                                    put("role", "assistant")
+                                    put("content", buildJsonArray {
+                                        add(buildJsonObject {
+                                            put("type", "output_text")
+                                            put("text", output)
+                                        })
+                                    })
+                                })
+                            })
+                        }),
+                        ContentType.Application.Json,
+                    )
+                }
+            }
         }
     }
 
@@ -558,3 +693,53 @@ private fun JsonObject.intOrDefault(name: String, default: Int): Int =
 
 private fun JsonObject.doubleOrDefault(name: String, default: Double): Double =
     this[name]?.jsonPrimitive?.doubleOrNull ?: default
+
+private fun deterministicEmbedding(text: String): List<Double> {
+    val vector = DoubleArray(64)
+    text.lowercase().split(Regex("[^\\p{L}\\p{N}]+"))
+        .filter(String::isNotBlank)
+        .forEach { token ->
+            val hash = token.hashCode()
+            val index = (hash and Int.MAX_VALUE) % vector.size
+            vector[index] += if (hash and 1 == 0) 1.0 else -1.0
+        }
+    val norm = kotlin.math.sqrt(vector.sumOf { it * it }).takeIf { it > 0.0 } ?: 1.0
+    return vector.map { it / norm }
+}
+
+private fun estimateTokens(value: String): Int =
+    value.split(Regex("\\s+")).count(String::isNotBlank).coerceAtLeast(1)
+
+private val OPENAPI_DOCUMENT: String = Json.encodeToString(buildJsonObject {
+    put("openapi", "3.1.0")
+    put("info", buildJsonObject {
+        put("title", "AndroML local API")
+        put("version", "1")
+    })
+    put("paths", buildJsonObject {
+        listOf(
+            "/healthz" to "get",
+            "/v1/models" to "get",
+            "/v1/chat/completions" to "post",
+            "/v1/responses" to "post",
+            "/v1/embeddings" to "post",
+            "/v1/rag/search" to "get",
+            "/v1/tools" to "get",
+            "/v1/tools/invoke" to "post",
+            "/v1/workflows" to "get",
+            "/v1/workflows/runs" to "post",
+            "/v1/agents" to "get",
+            "/v1/cluster" to "get",
+        ).forEach { (path, method) ->
+            put(path, buildJsonObject { put(method, buildJsonObject { put("responses", buildJsonObject { put("200", buildJsonObject { put("description", "Success") }) }) }) })
+        }
+    })
+    put("components", buildJsonObject {
+        put("securitySchemes", buildJsonObject {
+            put("bearerAuth", buildJsonObject {
+                put("type", "http")
+                put("scheme", "bearer")
+            })
+        })
+    })
+})

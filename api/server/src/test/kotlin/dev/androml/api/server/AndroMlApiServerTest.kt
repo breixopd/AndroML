@@ -129,6 +129,43 @@ class AndroMlApiServerTest {
     }
 
     @Test
+    fun embeddingsAndResponsesUseTheInferenceScope() = testApplication {
+        val generated = ApiKeyCodec.generate("test", setOf(ApiScope.Inference), nowEpochMillis = 1L)
+        val gateway = object : ApiInferenceGateway {
+            override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flowOf(ChatDelta("hello"))
+        }
+        val server = AndroMlApiServer(
+            config = ApiServerConfig(),
+            apiKeys = { listOf(generated.record) },
+            models = { listOf("litertlm") },
+            inference = gateway,
+        )
+        application { with(server) { module() } }
+
+        val embeddings = client.post("/v1/embeddings") {
+            header(HttpHeaders.Authorization, "Bearer ${generated.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"model\":\"local\",\"input\":[\"hello\",\"world\"]}")
+        }
+        assertEquals(HttpStatusCode.OK, embeddings.status)
+        assertTrue(embeddings.bodyAsText().contains("embedding"))
+        assertTrue(embeddings.bodyAsText().contains("prompt_tokens"))
+
+        val responses = client.post("/v1/responses") {
+            header(HttpHeaders.Authorization, "Bearer ${generated.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"model\":\"local\",\"input\":\"hello\"}")
+        }
+        assertEquals(HttpStatusCode.OK, responses.status)
+        assertTrue(responses.bodyAsText().contains("response"))
+        assertTrue(responses.bodyAsText().contains("hello"))
+
+        val openApi = client.get("/openapi.json")
+        assertEquals(HttpStatusCode.OK, openApi.status)
+        assertTrue(openApi.bodyAsText().contains("/v1/responses"))
+    }
+
+    @Test
     fun chunkedRequestBodiesAreBoundedEvenWithoutContentLength() = testApplication {
         val generated = ApiKeyCodec.generate("test", setOf(ApiScope.Inference), nowEpochMillis = 1L)
         val server = AndroMlApiServer(

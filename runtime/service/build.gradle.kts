@@ -16,4 +16,5 @@ dependencies {
     implementation(project(":runtime:litertlm"))
     implementation(project(":core:model"))
     implementation(libs.kotlinx.coroutines.android)
+    testImplementation(libs.junit)
 }
