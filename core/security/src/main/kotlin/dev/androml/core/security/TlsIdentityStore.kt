@@ -77,15 +77,24 @@ object TlsIdentityCodec {
 
             val certificate = CertificateFactory.getInstance("X.509")
                 .generateCertificate(ByteArrayInputStream(certificateBytes)) as X509Certificate
-            val privateKey = KeyFactory.getInstance("EC")
+            val keyAlgorithm = certificate.publicKey.algorithm
+            require(keyAlgorithm == "EC" || keyAlgorithm == "RSA") {
+                "TLS certificate key algorithm is unsupported"
+            }
+            val privateKey = KeyFactory.getInstance(keyAlgorithm)
                 .generatePrivate(PKCS8EncodedKeySpec(privateKeyBytes))
             certificate.verify(certificate.publicKey)
-            val proof = Signature.getInstance("SHA256withECDSA").run {
+            val signatureAlgorithm = when (keyAlgorithm) {
+                "EC" -> "SHA256withECDSA"
+                "RSA" -> "SHA256withRSA"
+                else -> error("unreachable")
+            }
+            val proof = Signature.getInstance(signatureAlgorithm).run {
                 initSign(privateKey)
                 update(certificate.tbsCertificate)
                 sign()
             }
-            require(Signature.getInstance("SHA256withECDSA").run {
+            require(Signature.getInstance(signatureAlgorithm).run {
                 initVerify(certificate.publicKey)
                 update(certificate.tbsCertificate)
                 verify(proof)
