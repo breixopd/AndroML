@@ -60,3 +60,22 @@ object LocalHashEmbedding {
         return FloatArray(dimension) { buffer.float }
     }
 }
+
+/** Embedding backend used by persistent RAG indexing and retrieval. */
+interface RagEmbeddingProvider {
+    val modelKey: String
+    /** Null means the backend determines the dimension at inference time. */
+    val dimension: Int?
+    val available: Boolean
+
+    suspend fun embed(text: String): FloatArray
+}
+
+/** Safe deterministic fallback when no verified embedding model is installed. */
+object LocalHashEmbeddingProvider : RagEmbeddingProvider {
+    override val modelKey: String = LocalHashEmbedding.MODEL_KEY
+    override val dimension: Int = LocalHashEmbedding.DIMENSION
+    override val available: Boolean = true
+
+    override suspend fun embed(text: String): FloatArray = LocalHashEmbedding.embed(text)
+}

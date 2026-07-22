@@ -13,6 +13,8 @@ class OnnxRuntimeAdapterTest {
     fun descriptorIsBundledForEmbeddingWorkloadsOnly() {
         assertEquals("onnxruntime", OnnxRuntimeDescriptor.value.id.value)
         assertTrue(ModelWorkload.TextEmbedding in OnnxRuntimeDescriptor.value.workloads)
+        assertTrue(ModelWorkload.ImageClassification in OnnxRuntimeDescriptor.value.workloads)
+        assertTrue(ModelWorkload.AudioClassification in OnnxRuntimeDescriptor.value.workloads)
         assertFalse(ModelWorkload.TextGeneration in OnnxRuntimeDescriptor.value.workloads)
     }
 

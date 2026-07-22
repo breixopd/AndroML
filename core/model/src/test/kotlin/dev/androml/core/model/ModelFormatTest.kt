@@ -10,6 +10,8 @@ class ModelFormatTest {
     fun classifiesSupportedArtifactFormatsWithoutExecutingThem() {
         assertEquals(ModelFormat.LiteRtLm, ModelFormatClassifier.forPath("models/chat.litertlm"))
         assertTrue(ModelFormatClassifier.supports("embed.tflite", ModelWorkload.TextEmbedding))
+        assertTrue(ModelFormatClassifier.supports("vision.tflite", ModelWorkload.ImageClassification))
+        assertTrue(ModelFormatClassifier.supports("audio.onnx", ModelWorkload.AudioClassification))
         assertEquals(ModelFormat.Onnx, ModelFormatClassifier.forPath("embed.onnx"))
         assertEquals(ModelFormat.Gguf, ModelFormatClassifier.forPath("llama.GGUF"))
         assertEquals(ModelFormat.ExecuTorch, ModelFormatClassifier.forPath("embed.pte"))

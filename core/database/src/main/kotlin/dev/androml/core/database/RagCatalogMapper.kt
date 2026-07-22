@@ -81,5 +81,33 @@ object RagCatalogMapper {
         )
     }
 
+    /** Replaces the fallback vectors with vectors computed by a verified embedding provider. */
+    fun mapWithVectors(
+        document: RagDocument,
+        chunks: List<TextChunk>,
+        contentArtifactSha256: String,
+        byteSize: Long,
+        observedAtEpochMillis: Long,
+        vectors: List<RagVectorEntity>,
+    ): RagCatalogSnapshot {
+        val snapshot = map(
+            document = document,
+            chunks = chunks,
+            contentArtifactSha256 = contentArtifactSha256,
+            byteSize = byteSize,
+            observedAtEpochMillis = observedAtEpochMillis,
+        )
+        require(
+            vectors.size == snapshot.chunks.size &&
+                vectors.map(RagVectorEntity::chunkId).toSet() == snapshot.chunks.map(RagChunkEntity::chunkId).toSet(),
+        ) {
+            "embedding vectors must cover every chunk exactly once"
+        }
+        require(vectors.all { it.dimension in 1..4096 && it.vector.size == it.dimension * Float.SIZE_BYTES }) {
+            "embedding vector payload is invalid"
+        }
+        return snapshot.copy(vectors = vectors)
+    }
+
     private val SHA256_PATTERN = Regex("[a-f0-9]{64}")
 }

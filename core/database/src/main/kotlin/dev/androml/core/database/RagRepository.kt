@@ -8,12 +8,15 @@ import dev.androml.core.rag.TextChunk
 import dev.androml.core.rag.SourceSpan
 import dev.androml.core.rag.HybridRetriever
 import dev.androml.core.rag.LocalHashEmbedding
+import dev.androml.core.rag.LocalHashEmbeddingProvider
+import dev.androml.core.rag.RagEmbeddingProvider
 import dev.androml.core.rag.RetrievalQuery
 import kotlinx.coroutines.flow.Flow
 
 class RagRepository(
     private val dao: RagDao,
     private val nowEpochMillis: () -> Long = { System.currentTimeMillis() },
+    private val embeddingProvider: RagEmbeddingProvider = LocalHashEmbeddingProvider,
 ) {
     fun observeCollections(): Flow<List<RagCollectionEntity>> = dao.observeCollections()
 
@@ -47,13 +50,28 @@ class RagRepository(
         contentArtifactSha256: String,
         byteSize: Long,
     ) {
+        val provider = if (embeddingProvider.available) embeddingProvider else LocalHashEmbeddingProvider
+        val vectors = chunks.map { chunk ->
+            val values = provider.embed(chunk.text)
+            validateVector(values, provider.dimension)
+            RagVectorEntity(
+                collectionId = chunk.collectionId.value,
+                documentId = chunk.documentId.value,
+                chunkId = chunk.id.value,
+                modelKey = provider.modelKey,
+                dimension = values.size,
+                vector = LocalHashEmbedding.encode(values),
+                updatedAtEpochMillis = nowEpochMillis(),
+            )
+        }
         dao.replaceDocument(
-            RagCatalogMapper.map(
+            RagCatalogMapper.mapWithVectors(
                 document = document,
                 chunks = chunks,
                 contentArtifactSha256 = contentArtifactSha256,
                 byteSize = byteSize,
                 observedAtEpochMillis = nowEpochMillis(),
+                vectors = vectors,
             ),
         )
     }
@@ -66,11 +84,19 @@ class RagRepository(
         require(limit in 1..100) { "RAG search limit is out of bounds" }
         val retrievalQuery = RetrievalQuery(text = query, topK = limit)
         val chunks = dao.chunksForCollection(collectionId.value, MAX_RETRIEVAL_CHUNKS).map(::toTextChunk)
-        val vectors = dao.vectorsForCollection(collectionId.value, LocalHashEmbedding.MODEL_KEY)
+        val provider = if (embeddingProvider.available) embeddingProvider else LocalHashEmbeddingProvider
+        val storedVectors = dao.vectorsForCollection(collectionId.value, provider.modelKey)
+        val vectors = (if (storedVectors.isEmpty() && provider.modelKey != LocalHashEmbedding.MODEL_KEY) {
+            dao.vectorsForCollection(collectionId.value, LocalHashEmbedding.MODEL_KEY)
+        } else storedVectors)
             .associate { vector ->
                 ChunkId.parse(vector.chunkId) to LocalHashEmbedding.decode(vector.vector, vector.dimension)
             }
-        val queryVector = LocalHashEmbedding.embed(query)
+        val queryVector = if (provider.modelKey == LocalHashEmbedding.MODEL_KEY || storedVectors.isEmpty()) {
+            LocalHashEmbedding.embed(query)
+        } else {
+            provider.embed(query).also { validateVector(it, provider.dimension) }
+        }
         val semanticScores = vectors.mapValues { (_, vector) -> LocalHashEmbedding.cosine(queryVector, vector) }
         return HybridRetriever().retrieve(retrievalQuery, chunks, semanticScores)
             .take(limit)
@@ -95,5 +121,12 @@ class RagRepository(
 
     private companion object {
         const val MAX_RETRIEVAL_CHUNKS = 10_000
+
+        fun validateVector(values: FloatArray, expectedDimension: Int?) {
+            require(values.isNotEmpty() && (expectedDimension == null || values.size == expectedDimension) && values.size <= 4096) {
+                "embedding provider returned an invalid dimension"
+            }
+            require(values.all { it.isFinite() }) { "embedding provider returned non-finite values" }
+        }
     }
 }

@@ -106,15 +106,66 @@ data class ApiToolInvocationResponse(
     val approvalId: String? = null,
 )
 
+data class ApiToolApprovalRequest(
+    val approvalId: String,
+) {
+    init {
+        require(approvalId.matches(Regex("[a-f0-9-]{16,64}"))) { "approval_id is invalid" }
+    }
+}
+
 data class ApiAgentInfo(
     val id: String,
     val displayName: String,
 )
 
+data class ApiAgentInvocationRequest(
+    val agentId: String,
+    val prompt: String,
+) {
+    init {
+        require(agentId.matches(Regex("[a-z0-9][a-z0-9._-]{0,63}"))) { "agent_id is invalid" }
+        require(prompt.isNotBlank() && prompt.length <= 64 * 1024) { "prompt is invalid" }
+    }
+}
+
+data class ApiAgentInvocationResponse(
+    val status: String,
+    val output: String? = null,
+    val error: String? = null,
+    val approvalId: String? = null,
+) {
+    init {
+        require(status.matches(Regex("[A-Za-z][A-Za-z0-9_-]{0,31}"))) { "agent status is invalid" }
+        require(output == null || output.length <= 256 * 1024) { "agent output is too large" }
+        require(error == null || error.length <= 512) { "agent error is too large" }
+        require(approvalId == null || approvalId.length in 1..128) { "approval ID is invalid" }
+    }
+}
+
 data class ApiClusterStatus(
     val enabled: Boolean,
     val nodeId: String?,
     val pairedPeerCount: Int,
+)
+
+data class ApiAgentApprovalRequest(
+    val approvalId: String,
+) {
+    init {
+        require(approvalId.matches(Regex("[a-f0-9-]{16,64}"))) { "approval_id is invalid" }
+    }
+}
+
+data class ApiAuditEvent(
+    val eventId: String,
+    val eventType: String,
+    val toolId: String,
+    val sideEffect: String,
+    val argumentHash: String,
+    val resultHash: String?,
+    val success: Boolean,
+    val occurredAtEpochMillis: Long,
 )
 
 class ApiFeatureUnavailableException : IllegalStateException("API feature is not enabled")
@@ -130,9 +181,17 @@ interface ApiFeatureGateway {
 
     suspend fun invokeTool(request: ApiToolInvocationRequest): ApiToolInvocationResponse = unavailable()
 
+    suspend fun approveTool(request: ApiToolApprovalRequest): ApiToolInvocationResponse = unavailable()
+
     suspend fun listAgents(): List<ApiAgentInfo> = unavailable()
 
+    suspend fun invokeAgent(request: ApiAgentInvocationRequest): ApiAgentInvocationResponse = unavailable()
+
+    suspend fun approveAgent(request: ApiAgentApprovalRequest): ApiAgentInvocationResponse = unavailable()
+
     suspend fun clusterStatus(): ApiClusterStatus = unavailable()
+
+    suspend fun listAuditEvents(limit: Int = 100): List<ApiAuditEvent> = unavailable()
 
     companion object {
         val Empty: ApiFeatureGateway = object : ApiFeatureGateway {}

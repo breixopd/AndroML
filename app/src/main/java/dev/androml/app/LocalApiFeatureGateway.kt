@@ -1,12 +1,17 @@
 package dev.androml.app
 
 import dev.androml.api.server.ApiAgentInfo
+import dev.androml.api.server.ApiAgentApprovalRequest
+import dev.androml.api.server.ApiAgentInvocationRequest
+import dev.androml.api.server.ApiAgentInvocationResponse
+import dev.androml.api.server.ApiAuditEvent
 import dev.androml.api.server.ApiClusterStatus
 import dev.androml.api.server.ApiFeatureGateway
 import dev.androml.api.server.ApiRagResult
 import dev.androml.api.server.ApiRagSearchRequest
 import dev.androml.api.server.ApiRagSearchResponse
 import dev.androml.api.server.ApiToolInfo
+import dev.androml.api.server.ApiToolApprovalRequest
 import dev.androml.api.server.ApiToolInvocationRequest
 import dev.androml.api.server.ApiToolInvocationResponse
 import dev.androml.api.server.ApiWorkflowInfo
@@ -14,6 +19,7 @@ import dev.androml.api.server.ApiWorkflowRunRequest
 import dev.androml.api.server.ApiWorkflowRunResponse
 import dev.androml.cluster.core.ClusterRagSearchTask
 import dev.androml.core.database.WorkflowDefinitionRepository
+import dev.androml.core.database.ToolAuditDao
 import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.tools.ToolId
@@ -25,6 +31,7 @@ class LocalApiFeatureGateway(
     private val workflowController: WorkflowController,
     private val workflowRepository: WorkflowDefinitionRepository,
     private val clusterController: ClusterController,
+    private val auditDao: ToolAuditDao,
 ) : ApiFeatureGateway {
     override suspend fun ragSearch(request: ApiRagSearchRequest): ApiRagSearchResponse {
         val results = clusterController.searchDistributedRag(
@@ -110,10 +117,52 @@ class LocalApiFeatureGateway(
         }
     }
 
+    override suspend fun approveTool(request: ApiToolApprovalRequest): ApiToolInvocationResponse {
+        return when (val outcome = workflowController.approveTool(request.approvalId)) {
+            is dev.androml.core.tools.ToolExecutionOutcome.Completed -> ApiToolInvocationResponse(
+                status = "Completed",
+                result = outcome.result,
+            )
+            is dev.androml.core.tools.ToolExecutionOutcome.ApprovalRequired -> ApiToolInvocationResponse(
+                status = "ApprovalRequired",
+                reason = "tool approval is required",
+                approvalId = outcome.approval.approvalId,
+            )
+            is dev.androml.core.tools.ToolExecutionOutcome.Denied -> ApiToolInvocationResponse(
+                status = "Denied",
+                reason = outcome.reason,
+            )
+            is dev.androml.core.tools.ToolExecutionOutcome.Failed -> ApiToolInvocationResponse(
+                status = "Failed",
+                reason = outcome.reason,
+            )
+        }
+    }
+
     override suspend fun listAgents(): List<ApiAgentInfo> = if (workflowController.hasAgentModel()) {
         listOf(ApiAgentInfo(WorkflowController.LOCAL_AGENT_KEY, "Local AndroML agent"))
     } else {
         emptyList()
+    }
+
+    override suspend fun invokeAgent(request: ApiAgentInvocationRequest): ApiAgentInvocationResponse {
+        val result = workflowController.invokeAgent(request.agentId, request.prompt)
+        return ApiAgentInvocationResponse(
+            status = result.status,
+            output = result.output,
+            error = result.error,
+            approvalId = result.approvalId,
+        )
+    }
+
+    override suspend fun approveAgent(request: ApiAgentApprovalRequest): ApiAgentInvocationResponse {
+        val result = workflowController.approveAgent(request.approvalId)
+        return ApiAgentInvocationResponse(
+            status = result.status,
+            output = result.output,
+            error = result.error,
+            approvalId = result.approvalId,
+        )
     }
 
     override suspend fun clusterStatus(): ApiClusterStatus {
@@ -123,6 +172,22 @@ class LocalApiFeatureGateway(
             ClusterControllerState.Disabled -> ApiClusterStatus(false, nodeId, 0)
             is ClusterControllerState.Running -> ApiClusterStatus(true, nodeId, state.pairedPeerCount)
             is ClusterControllerState.Failed -> ApiClusterStatus(false, nodeId, 0)
+        }
+    }
+
+    override suspend fun listAuditEvents(limit: Int): List<ApiAuditEvent> {
+        require(limit in 1..500) { "audit limit is out of bounds" }
+        return auditDao.recent(limit).map { event ->
+            ApiAuditEvent(
+                eventId = event.eventId,
+                eventType = event.eventType,
+                toolId = event.toolId,
+                sideEffect = event.sideEffect,
+                argumentHash = event.argumentHash,
+                resultHash = event.resultHash,
+                success = event.success,
+                occurredAtEpochMillis = event.occurredAtEpochMillis,
+            )
         }
     }
 }

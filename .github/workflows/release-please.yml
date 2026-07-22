@@ -7,6 +7,8 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  attestations: write
+  id-token: write
 
 concurrency:
   group: github-test-release
@@ -48,7 +50,7 @@ jobs:
 
       - name: Install Android SDK packages
         if: steps.release.outputs.release_created == 'true'
-        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
 
       - name: Require test-release signing inputs
         if: steps.release.outputs.release_created == 'true'
@@ -75,6 +77,7 @@ jobs:
       - name: Build OSS test release APK
         if: steps.release.outputs.release_created == 'true'
         env:
+          ANDROML_PREPARE_LLAMA_CPP: 'true'
           ANDROML_RELEASE_KEYSTORE: ${{ runner.temp }}/androml-test-release.jks
           ANDROML_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROML_RELEASE_STORE_PASSWORD }}
           ANDROML_RELEASE_KEY_ALIAS: ${{ secrets.ANDROML_RELEASE_KEY_ALIAS }}
@@ -87,7 +90,15 @@ jobs:
           version="${{ steps.release.outputs.tag_name }}"
           ./scripts/package-test-release.sh "${version#v}"
           test "$STORE_SUBMISSIONS_ENABLED" = 'false'
-          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -ge 8
+          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -ge 11
+
+      - name: Attest phone-test binaries
+        if: steps.release.outputs.release_created == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            dist/test-release/*.apk
+            dist/test-release/*.aab
 
       - name: Confirm GitHub release exists
         if: steps.release.outputs.release_created == 'true'

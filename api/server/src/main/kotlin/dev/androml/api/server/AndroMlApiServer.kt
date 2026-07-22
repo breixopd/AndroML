@@ -48,12 +48,14 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
+import java.util.Base64
 import io.netty.handler.ssl.SslHandler
 
 data class ApiServerConfig(
@@ -78,7 +80,10 @@ interface ApiInferenceGateway {
 
     /** Returns model-backed vectors when the host can execute the requested artifact. */
     suspend fun embeddings(request: EmbeddingsRequest): List<List<Double>> =
-        request.inputs.map(::deterministicEmbedding)
+        throw IllegalStateException("embedding runtime is not configured")
+
+    suspend fun tensorInference(request: TensorInferenceRequest): TensorInferenceResponse =
+        throw IllegalStateException("tensor runtime is not configured")
 }
 
 data class ChatMessage(
@@ -222,6 +227,57 @@ data class ResponsesRequest(
     }
 }
 
+/** API transport for a caller-preprocessed image/audio tensor. */
+data class TensorInferenceRequest(
+    val model: String,
+    val workload: String,
+    val data: ByteArray,
+    val shape: LongArray,
+    val dataType: String,
+) {
+    init {
+        require(model.isNotBlank() && model.length <= 256) { "model is invalid" }
+        require(workload.matches(Regex("[A-Za-z][A-Za-z0-9_]{0,63}"))) { "workload is invalid" }
+        require(data.size in 1..MAX_DATA_BYTES) { "tensor data is out of bounds" }
+        require(shape.isNotEmpty() && shape.size <= 8 && shape.all { it in 1L..65_536L }) {
+            "tensor shape is out of bounds"
+        }
+        require(dataType in DATA_TYPES) { "tensor data type is unsupported" }
+    }
+
+    companion object {
+        const val MAX_DATA_BYTES = 8 * 1024 * 1024
+        val DATA_TYPES = setOf("Float32", "Int32", "Int64", "UInt8", "Int8")
+
+        fun parse(root: JsonObject): TensorInferenceRequest {
+            val encoded = root.string("data")
+            val data = runCatching { Base64.getDecoder().decode(encoded) }
+                .getOrElse { throw IllegalArgumentException("tensor data is invalid") }
+            val shape = root["shape"]?.jsonArray?.map {
+                it.jsonPrimitive.longOrNull ?: throw IllegalArgumentException("tensor shape is invalid")
+            }?.toLongArray() ?: throw IllegalArgumentException("tensor shape is missing")
+            return TensorInferenceRequest(
+                model = root.string("model"),
+                workload = root.string("workload"),
+                data = data,
+                shape = shape,
+                dataType = root.string("data_type"),
+            )
+        }
+    }
+}
+
+data class TensorInferenceResponse(
+    val output: List<Double>,
+    val runtimeId: String,
+) {
+    init {
+        require(output.size in 1..1_000_000) { "tensor output is out of bounds" }
+        require(output.all(Double::isFinite)) { "tensor output contains a non-finite value" }
+        require(runtimeId.matches(Regex("[a-z0-9][a-z0-9._-]{0,63}"))) { "runtime ID is invalid" }
+    }
+}
+
 class LanMtlsRequiredException : IllegalStateException(
     "LAN API binding is disabled until a verified mTLS transport is configured",
 )
@@ -282,6 +338,16 @@ class AndroMlApiServer(
         install(CallLogging)
         install(ContentNegotiation) { json(Json { explicitNulls = false }) }
         routing {
+            fun apiGet(path: String, handler: suspend ApplicationCall.() -> Unit) {
+                get("/v1$path") { handler(call) }
+                get("/api/v1$path") { handler(call) }
+            }
+
+            fun apiPost(path: String, handler: suspend ApplicationCall.() -> Unit) {
+                post("/v1$path") { handler(call) }
+                post("/api/v1$path") { handler(call) }
+            }
+
             get("/openapi.json") {
                 call.respondText(OPENAPI_DOCUMENT, ContentType.Application.Json)
             }
@@ -291,16 +357,18 @@ class AndroMlApiServer(
                     ContentType.Application.Json,
                 )
             }
-            get("/v1/models") {
-                if (!authorize(call, ApiScope.ModelsRead, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/models") {
+                val call = this
+                if (!authorize(call, ApiScope.ModelsRead, ApiRequestClass.ReadOnly)) return@apiGet
                 val data = buildJsonArray { models().forEach { model -> add(buildJsonObject { put("id", model); put("object", "model") }) } }
                 call.respondText(
                     Json.encodeToString(buildJsonObject { put("object", "list"); put("data", data) }),
                     ContentType.Application.Json,
                 )
             }
-            get("/v1/rag/search") {
-                if (!authorize(call, ApiScope.RagRead, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/rag/search") {
+                val call = this
+                if (!authorize(call, ApiScope.RagRead, ApiRequestClass.ReadOnly)) return@apiGet
                 val request = runCatching {
                     ApiRagSearchRequest(
                         collectionId = call.request.queryParameters["collection_id"]
@@ -311,7 +379,7 @@ class AndroMlApiServer(
                     )
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@get
+                    return@apiGet
                 }
                 try {
                     val response = features.ragSearch(request)
@@ -320,8 +388,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            get("/v1/workflows") {
-                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/workflows") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@apiGet
                 try {
                     val workflows = features.listWorkflows()
                     val data = buildJsonArray {
@@ -342,8 +411,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            post("/v1/workflows/runs") {
-                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@post
+            apiPost("/workflows/runs") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@apiPost
                 val request = runCatching {
                     val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
                     ApiWorkflowRunRequest(
@@ -353,7 +423,7 @@ class AndroMlApiServer(
                     )
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 try {
                     val response = features.runWorkflow(request)
@@ -362,8 +432,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            get("/v1/tools") {
-                if (!authorize(call, ApiScope.Tools, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/tools") {
+                val call = this
+                if (!authorize(call, ApiScope.Tools, ApiRequestClass.ReadOnly)) return@apiGet
                 try {
                     val data = buildJsonArray {
                         features.listTools().forEach { tool -> add(tool.toJson()) }
@@ -376,8 +447,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            post("/v1/tools/invoke") {
-                if (!authorize(call, ApiScope.Tools, ApiRequestClass.Mutating)) return@post
+            apiPost("/tools/invoke") {
+                val call = this
+                if (!authorize(call, ApiScope.Tools, ApiRequestClass.Mutating)) return@apiPost
                 val request = runCatching {
                     val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
                     ApiToolInvocationRequest(
@@ -387,7 +459,7 @@ class AndroMlApiServer(
                     )
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 try {
                     val response = features.invokeTool(request)
@@ -396,8 +468,26 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            get("/v1/agents") {
-                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@get
+            apiPost("/tools/approve") {
+                val call = this
+                if (!authorize(call, ApiScope.Tools, ApiRequestClass.Mutating)) return@apiPost
+                val request = runCatching {
+                    val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
+                    ApiToolApprovalRequest(approvalId = root.string("approval_id"))
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                try {
+                    val response = features.approveTool(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            apiGet("/agents") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@apiGet
                 try {
                     val data = buildJsonArray {
                         features.listAgents().forEach { agent ->
@@ -415,8 +505,46 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            get("/v1/cluster") {
-                if (!authorize(call, ApiScope.Cluster, ApiRequestClass.ReadOnly)) return@get
+            apiPost("/agents/invoke") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@apiPost
+                val request = runCatching {
+                    val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
+                    ApiAgentInvocationRequest(
+                        agentId = root.string("agent_id"),
+                        prompt = root.string("prompt"),
+                    )
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                try {
+                    val response = features.invokeAgent(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            apiPost("/agents/approve") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@apiPost
+                val request = runCatching {
+                    val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
+                    ApiAgentApprovalRequest(approvalId = root.string("approval_id"))
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                try {
+                    val response = features.approveAgent(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            apiGet("/cluster") {
+                val call = this
+                if (!authorize(call, ApiScope.Cluster, ApiRequestClass.ReadOnly)) return@apiGet
                 try {
                     val status = features.clusterStatus()
                     call.respondText(Json.encodeToString(status.toJson()), ContentType.Application.Json)
@@ -424,12 +552,29 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            post("/v1/chat/completions") {
-                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
+            apiGet("/audit/events") {
+                val call = this
+                if (!authorize(call, ApiScope.Admin, ApiRequestClass.ReadOnly)) return@apiGet
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
+                val events = runCatching { features.listAuditEvents(limit) }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiGet
+                }
+                call.respondText(
+                    Json.encodeToString(buildJsonObject {
+                        put("object", "list")
+                        put("data", buildJsonArray { events.forEach { add(it.toJson()) } })
+                    }),
+                    ContentType.Application.Json,
+                )
+            }
+            apiPost("/chat/completions") {
+                val call = this
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
                 val body = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
                 if (body != null && body > config.maxRequestBodyBytes) {
                     call.respondText("{\"error\":\"request body too large\"}", status = HttpStatusCode.PayloadTooLarge)
-                    return@post
+                    return@apiPost
                 }
                 val request = runCatching {
                     ChatCompletionRequest.parse(call.receiveBoundedText(config.maxRequestBodyBytes))
@@ -447,7 +592,7 @@ class AndroMlApiServer(
                         },
                         status = status,
                     )
-                    return@post
+                    return@apiPost
                 }
                 if (request.stream) {
                     call.respondTextWriter(ContentType.Text.EventStream) {
@@ -477,17 +622,18 @@ class AndroMlApiServer(
                     call.respondText(Json.encodeToString(response), ContentType.Application.Json)
                 }
             }
-            post("/v1/embeddings") {
-                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
+            apiPost("/embeddings") {
+                val call = this
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
                 val request = runCatching {
                     EmbeddingsRequest.parse(call.receiveBoundedJson(config.maxRequestBodyBytes))
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 val vectors = runCatching { inference.embeddings(request) }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 if (vectors.size != request.inputs.size || vectors.any { vector ->
                         vector.isEmpty() || vector.size > MAX_EMBEDDING_DIMENSION || vector.any { !it.isFinite() }
@@ -495,7 +641,7 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(
                         IllegalStateException("embedding runtime returned an invalid vector batch"),
                     )
-                    return@post
+                    return@apiPost
                 }
                 val data = buildJsonArray {
                     vectors.forEachIndexed { index, vector ->
@@ -521,13 +667,38 @@ class AndroMlApiServer(
                     ContentType.Application.Json,
                 )
             }
-            post("/v1/responses") {
-                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
+            apiPost("/tensor/inference") {
+                val call = this
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
+                val request = runCatching {
+                    TensorInferenceRequest.parse(call.receiveBoundedJson(config.maxRequestBodyBytes))
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                val response = runCatching { inference.tensorInference(request) }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                call.respondText(
+                    Json.encodeToString(buildJsonObject {
+                        put("object", "tensor.inference")
+                        put("model", request.model)
+                        put("workload", request.workload)
+                        put("runtime", response.runtimeId)
+                        put("output", buildJsonArray { response.output.forEach { add(JsonPrimitive(it)) } })
+                    }),
+                    ContentType.Application.Json,
+                )
+            }
+            apiPost("/responses") {
+                val call = this
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
                 val request = runCatching {
                     ResponsesRequest.parse(call.receiveBoundedJson(config.maxRequestBodyBytes))
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 val chatRequest = ChatCompletionRequest(
                     model = request.model,
@@ -669,10 +840,28 @@ private fun ApiToolInvocationResponse.toJson() = buildJsonObject {
     approvalId?.let { put("approval_id", it) }
 }
 
+private fun ApiAgentInvocationResponse.toJson() = buildJsonObject {
+    put("status", status)
+    output?.let { put("output", it) }
+    error?.let { put("error", it) }
+    approvalId?.let { put("approval_id", it) }
+}
+
 private fun ApiClusterStatus.toJson() = buildJsonObject {
     put("enabled", enabled)
     nodeId?.let { put("node_id", it) }
     put("paired_peer_count", pairedPeerCount)
+}
+
+private fun ApiAuditEvent.toJson() = buildJsonObject {
+    put("event_id", eventId)
+    put("event_type", eventType)
+    put("tool_id", toolId)
+    put("side_effect", sideEffect)
+    put("argument_hash", argumentHash)
+    resultHash?.let { put("result_hash", it) }
+    put("success", success)
+    put("occurred_at_epoch_millis", occurredAtEpochMillis)
 }
 
 private suspend fun ApplicationCall.respondApiFeatureError(error: Throwable) {
@@ -717,19 +906,6 @@ private fun JsonObject.intOrDefault(name: String, default: Int): Int =
 private fun JsonObject.doubleOrDefault(name: String, default: Double): Double =
     this[name]?.jsonPrimitive?.doubleOrNull ?: default
 
-private fun deterministicEmbedding(text: String): List<Double> {
-    val vector = DoubleArray(64)
-    text.lowercase().split(Regex("[^\\p{L}\\p{N}]+"))
-        .filter(String::isNotBlank)
-        .forEach { token ->
-            val hash = token.hashCode()
-            val index = (hash and Int.MAX_VALUE) % vector.size
-            vector[index] += if (hash and 1 == 0) 1.0 else -1.0
-        }
-    val norm = kotlin.math.sqrt(vector.sumOf { it * it }).takeIf { it > 0.0 } ?: 1.0
-    return vector.map { it / norm }
-}
-
 private const val MAX_EMBEDDING_DIMENSION = 4096
 
 private fun estimateTokens(value: String): Int =
@@ -748,14 +924,25 @@ private val OPENAPI_DOCUMENT: String = Json.encodeToString(buildJsonObject {
             "/v1/chat/completions" to "post",
             "/v1/responses" to "post",
             "/v1/embeddings" to "post",
+            "/v1/tensor/inference" to "post",
             "/v1/rag/search" to "get",
             "/v1/tools" to "get",
             "/v1/tools/invoke" to "post",
+            "/v1/tools/approve" to "post",
             "/v1/workflows" to "get",
             "/v1/workflows/runs" to "post",
             "/v1/agents" to "get",
+            "/v1/agents/invoke" to "post",
+            "/v1/agents/approve" to "post",
             "/v1/cluster" to "get",
-        ).forEach { (path, method) ->
+            "/v1/audit/events" to "get",
+        ).flatMap { (path, method) ->
+            if (path.startsWith("/v1/")) {
+                listOf(path to method, path.replaceFirst("/v1", "/api/v1") to method)
+            } else {
+                listOf(path to method)
+            }
+        }.forEach { (path, method) ->
             put(path, buildJsonObject { put(method, buildJsonObject { put("responses", buildJsonObject { put("200", buildJsonObject { put("description", "Success") }) }) }) })
         }
     })

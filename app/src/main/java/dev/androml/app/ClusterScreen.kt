@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import dev.androml.cluster.core.ClusterPeer
 import dev.androml.cluster.core.ClusterPairingInviteIssuer
 import dev.androml.cluster.core.ClusterWorkload
+import dev.androml.cluster.core.ContentHash
 import dev.androml.cluster.core.NodeCapabilities
 import dev.androml.cluster.core.PeerEndpoint
 import dev.androml.cluster.core.PeerId
@@ -80,6 +82,9 @@ fun ClusterScreen(
     }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var transferPeerId by remember { mutableStateOf("") }
+    var transferArtifactHash by remember { mutableStateOf("") }
+    var transferApproved by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(tlsIdentityStore) {
@@ -266,6 +271,41 @@ fun ClusterScreen(
         }
     }
 
+    fun transferModel() {
+        val parsedPeer = try {
+            PeerId.parse(transferPeerId.trim().lowercase(Locale.ROOT))
+        } catch (error: Throwable) {
+            message = error.message?.take(256) ?: "Peer ID is invalid"
+            return
+        }
+        val parsedHash = try {
+            ContentHash.parse(transferArtifactHash.trim().lowercase(Locale.ROOT))
+        } catch (error: Throwable) {
+            message = error.message?.take(256) ?: "Artifact hash is invalid"
+            return
+        }
+        if (!transferApproved) {
+            message = "Confirm owner approval before transferring a model"
+            return
+        }
+        busy = true
+        message = null
+        scope.launch {
+            try {
+                val ack = withContext(Dispatchers.IO) {
+                    controller.transferModel(parsedPeer, parsedHash, ownerApproved = true)
+                }
+                message = "Transferred ${ack.artifactHash.value.take(12)}… to ${parsedPeer.value}"
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "Model transfer failed"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -283,7 +323,7 @@ fun ClusterScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Cluster listener", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Enable the local mTLS endpoint after pairing at least one phone. Verified inference replicas and distributed RAG fan-out are enabled now; workflow-stage placement is the next cluster bridge.",
+                        "Enable the local mTLS endpoint after pairing at least one phone. Verified whole-request inference replicas, distributed RAG fan-out, and workflow-stage placement use the same trusted peer ledger.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -538,6 +578,55 @@ fun ClusterScreen(
                 }
             }
         }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Transfer an installed model", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Copy a verified artifact to a paired phone over the pinned mTLS channel. Transfers are resumable and require an explicit owner approval each time.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = transferPeerId,
+                        onValueChange = { transferPeerId = it.take(64) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Target peer ID") },
+                        singleLine = true,
+                        enabled = !busy,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = transferArtifactHash,
+                        onValueChange = { transferArtifactHash = it.take(64) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Installed artifact SHA-256") },
+                        supportingText = { Text("Only verified local artifacts can be transferred") },
+                        singleLine = true,
+                        enabled = !busy,
+                    )
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Checkbox(
+                            checked = transferApproved,
+                            onCheckedChange = { transferApproved = it },
+                            enabled = !busy,
+                        )
+                        Text(
+                            "I approve sending this model to the target phone",
+                            modifier = Modifier.padding(top = 12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Button(
+                        onClick = ::transferModel,
+                        enabled = !busy && transferPeerId.isNotBlank() && transferArtifactHash.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (busy) "Transferring…" else "Transfer model")
+                    }
+                }
+            }
+        }
         if (peers.isEmpty()) {
             item { Text("No peers are paired. Pair a phone before starting the cluster listener.") }
         } else {
@@ -605,4 +694,5 @@ private fun ClusterWorkload.displayName(): String = when (this) {
     ClusterWorkload.InferenceReplica -> "Inference"
     ClusterWorkload.WorkflowStage -> "Workflow"
     ClusterWorkload.RagSearch -> "RAG"
+    ClusterWorkload.ModelTransfer -> "Model transfer"
 }

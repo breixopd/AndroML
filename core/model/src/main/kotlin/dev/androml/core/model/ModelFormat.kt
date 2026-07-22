@@ -6,12 +6,52 @@ enum class ModelFormat(
     val runtimeId: String,
     val workloads: Set<ModelWorkload>,
 ) {
-    LiteRt("tflite", "litert", setOf(ModelWorkload.TextEmbedding)),
+    LiteRt(
+        "tflite",
+        "litert",
+        setOf(
+            ModelWorkload.TextEmbedding,
+            ModelWorkload.ImageClassification,
+            ModelWorkload.ObjectDetection,
+            ModelWorkload.ImageSegmentation,
+            ModelWorkload.AudioClassification,
+        ),
+    ),
     LiteRtLm("litertlm", "litertlm", setOf(ModelWorkload.TextGeneration)),
     Gguf("gguf", "llamacpp", setOf(ModelWorkload.TextGeneration)),
-    Onnx("onnx", "onnxruntime", setOf(ModelWorkload.TextEmbedding)),
-    Ort("ort", "onnxruntime", setOf(ModelWorkload.TextEmbedding)),
-    ExecuTorch("pte", "executorch", setOf(ModelWorkload.TextEmbedding)),
+    Onnx(
+        "onnx",
+        "onnxruntime",
+        setOf(
+            ModelWorkload.TextEmbedding,
+            ModelWorkload.ImageClassification,
+            ModelWorkload.ObjectDetection,
+            ModelWorkload.ImageSegmentation,
+            ModelWorkload.AudioClassification,
+        ),
+    ),
+    Ort(
+        "ort",
+        "onnxruntime",
+        setOf(
+            ModelWorkload.TextEmbedding,
+            ModelWorkload.ImageClassification,
+            ModelWorkload.ObjectDetection,
+            ModelWorkload.ImageSegmentation,
+            ModelWorkload.AudioClassification,
+        ),
+    ),
+    ExecuTorch(
+        "pte",
+        "executorch",
+        setOf(
+            ModelWorkload.TextEmbedding,
+            ModelWorkload.ImageClassification,
+            ModelWorkload.ObjectDetection,
+            ModelWorkload.ImageSegmentation,
+            ModelWorkload.AudioClassification,
+        ),
+    ),
     Mlc("mlc", "mlc", emptySet()),
 }
 

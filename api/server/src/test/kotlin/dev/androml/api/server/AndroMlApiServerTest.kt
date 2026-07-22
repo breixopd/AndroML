@@ -22,8 +22,10 @@ import java.io.IOException
 import java.net.ServerSocket
 import javax.net.ssl.HttpsURLConnection
 import java.net.URL
+import java.util.Base64
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -34,6 +36,8 @@ class AndroMlApiServerTest {
     fun featureRoutesUseIndependentScopesAndReturnBoundedTypedResults() = testApplication {
         val ragKey = ApiKeyCodec.generate("rag", setOf(ApiScope.RagRead), nowEpochMillis = 1L)
         val toolKey = ApiKeyCodec.generate("tools", setOf(ApiScope.Tools), nowEpochMillis = 1L)
+        val agentKey = ApiKeyCodec.generate("agents", setOf(ApiScope.Agents), nowEpochMillis = 1L)
+        val adminKey = ApiKeyCodec.generate("admin", setOf(ApiScope.Admin), nowEpochMillis = 1L)
         val featureGateway = object : ApiFeatureGateway {
             override suspend fun ragSearch(request: ApiRagSearchRequest): ApiRagSearchResponse =
                 ApiRagSearchResponse(listOf(ApiRagResult("node-local", "Notes", "local", "answer", 0.9)))
@@ -41,10 +45,25 @@ class AndroMlApiServerTest {
             override suspend fun listTools(): List<ApiToolInfo> = listOf(
                 ApiToolInfo("device.info", "Device information", "Reads local capability data", "Read", emptyList()),
             )
+
+            override suspend fun listAuditEvents(limit: Int): List<ApiAuditEvent> = listOf(
+                ApiAuditEvent("event-1", "tool.invocation", "device.info", "Read", "a".repeat(64), null, true, 1L),
+            )
+
+            override suspend fun invokeAgent(request: ApiAgentInvocationRequest): ApiAgentInvocationResponse =
+                ApiAgentInvocationResponse("Completed", output = "agent:${request.prompt}")
+
+            override suspend fun approveTool(request: ApiToolApprovalRequest): ApiToolInvocationResponse =
+                ApiToolInvocationResponse("Completed", result = kotlinx.serialization.json.buildJsonObject {
+                    put("approved", true)
+                })
+
+            override suspend fun approveAgent(request: ApiAgentApprovalRequest): ApiAgentInvocationResponse =
+                ApiAgentInvocationResponse("Completed", output = "agent-approved")
         }
         val server = AndroMlApiServer(
             config = ApiServerConfig(),
-            apiKeys = { listOf(ragKey.record, toolKey.record) },
+            apiKeys = { listOf(ragKey.record, toolKey.record, agentKey.record, adminKey.record) },
             models = { listOf("fake") },
             inference = emptyInferenceGateway(),
             features = featureGateway,
@@ -60,11 +79,53 @@ class AndroMlApiServerTest {
         assertEquals(HttpStatusCode.OK, rag.status)
         assertTrue(rag.bodyAsText().contains("answer"))
 
+        val nativeRag = client.get("/api/v1/rag/search?collection_id=docs&q=hello&top_k=4") {
+            header(HttpHeaders.Authorization, "Bearer ${ragKey.plaintextToken}")
+        }
+        assertEquals(HttpStatusCode.OK, nativeRag.status)
+        assertTrue(nativeRag.bodyAsText().contains("answer"))
+
         val tools = client.get("/v1/tools") {
             header(HttpHeaders.Authorization, "Bearer ${toolKey.plaintextToken}")
         }
         assertEquals(HttpStatusCode.OK, tools.status)
         assertTrue(tools.bodyAsText().contains("device.info"))
+
+        val nativeTools = client.get("/api/v1/tools") {
+            header(HttpHeaders.Authorization, "Bearer ${toolKey.plaintextToken}")
+        }
+        assertEquals(HttpStatusCode.OK, nativeTools.status)
+        assertTrue(nativeTools.bodyAsText().contains("device.info"))
+
+        val agent = client.post("/api/v1/agents/invoke") {
+            header(HttpHeaders.Authorization, "Bearer ${agentKey.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"agent_id\":\"local-agent\",\"prompt\":\"hello\"}")
+        }
+        assertEquals(HttpStatusCode.OK, agent.status)
+        assertTrue(agent.bodyAsText().contains("agent:hello"))
+
+        val toolApproval = client.post("/v1/tools/approve") {
+            header(HttpHeaders.Authorization, "Bearer ${toolKey.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"approval_id\":\"${"a".repeat(32)}\"}")
+        }
+        assertEquals(HttpStatusCode.OK, toolApproval.status)
+        assertTrue(toolApproval.bodyAsText().contains("approved"))
+
+        val agentApproval = client.post("/api/v1/agents/approve") {
+            header(HttpHeaders.Authorization, "Bearer ${agentKey.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"approval_id\":\"${"b".repeat(32)}\"}")
+        }
+        assertEquals(HttpStatusCode.OK, agentApproval.status)
+        assertTrue(agentApproval.bodyAsText().contains("agent-approved"))
+
+        val audit = client.get("/api/v1/audit/events?limit=10") {
+            header(HttpHeaders.Authorization, "Bearer ${adminKey.plaintextToken}")
+        }
+        assertEquals(HttpStatusCode.OK, audit.status)
+        assertTrue(audit.bodyAsText().contains("event-1"))
     }
 
     @Test
@@ -126,6 +187,14 @@ class AndroMlApiServerTest {
         }
         assertEquals(HttpStatusCode.OK, response.status)
         assertTrue(response.bodyAsText().contains("data: [DONE]"))
+
+        val nativeResponse = client.post("/api/v1/chat/completions") {
+            header(HttpHeaders.Authorization, "Bearer ${generated.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"model\":\"fake\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+        }
+        assertEquals(HttpStatusCode.OK, nativeResponse.status)
+        assertTrue(nativeResponse.bodyAsText().contains("chat.completion"))
     }
 
     @Test
@@ -136,6 +205,9 @@ class AndroMlApiServerTest {
 
             override suspend fun embeddings(request: EmbeddingsRequest): List<List<Double>> =
                 request.inputs.map { listOf(it.length.toDouble(), 1.0) }
+
+            override suspend fun tensorInference(request: TensorInferenceRequest): TensorInferenceResponse =
+                TensorInferenceResponse(listOf(0.25, 0.75), "litert")
         }
         val server = AndroMlApiServer(
             config = ApiServerConfig(),
@@ -164,9 +236,22 @@ class AndroMlApiServerTest {
         assertTrue(responses.bodyAsText().contains("response"))
         assertTrue(responses.bodyAsText().contains("hello"))
 
+        val tensor = client.post("/api/v1/tensor/inference") {
+            header(HttpHeaders.Authorization, "Bearer ${generated.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                """{"model":"vision","workload":"ImageClassification","data":"${Base64.getEncoder().encodeToString(ByteArray(4))}","shape":[1],"data_type":"Float32"}""",
+            )
+        }
+        assertEquals(HttpStatusCode.OK, tensor.status)
+        assertTrue(tensor.bodyAsText().contains("tensor.inference"))
+        assertTrue(tensor.bodyAsText().contains("0.25"))
+
         val openApi = client.get("/openapi.json")
         assertEquals(HttpStatusCode.OK, openApi.status)
         assertTrue(openApi.bodyAsText().contains("/v1/responses"))
+        assertTrue(openApi.bodyAsText().contains("/api/v1/responses"))
+        assertTrue(openApi.bodyAsText().contains("/api/v1/tensor/inference"))
     }
 
     @Test
