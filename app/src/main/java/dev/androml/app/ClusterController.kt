@@ -16,6 +16,7 @@ import dev.androml.cluster.core.ClusterRagSearchTask
 import dev.androml.cluster.core.ClusterWorkflowCodec
 import dev.androml.cluster.core.ClusterWorkflowStageResult
 import dev.androml.cluster.core.ClusterWorkflowStageTask
+import dev.androml.cluster.core.ClusterPairingInviteIssuer
 import dev.androml.cluster.core.ClusterRequest
 import dev.androml.cluster.core.ClusterWorkload
 import dev.androml.cluster.core.ContentHash
@@ -103,6 +104,7 @@ class ClusterController(
 ) {
     private val _state = MutableStateFlow<ClusterControllerState>(ClusterControllerState.Disabled)
     private val ledger = InMemoryClusterJobLedger()
+    private val pairingInvites = ClusterPairingInviteIssuer()
     private var server: ClusterExecutionServer? = null
     @Volatile
     private var localAdvertisement: ClusterCapabilityAdvertisement? = null
@@ -110,6 +112,24 @@ class ClusterController(
 
     @Synchronized
     fun currentState(): ClusterControllerState = _state.value
+
+    /** Creates a short-lived QR/deep-link payload for onboarding another phone. */
+    suspend fun createPairingInvite(host: String, port: Int): String = withContext(Dispatchers.IO) {
+        val advertisedHost = host.trim()
+        require(advertisedHost.length in 1..253 && !advertisedHost.any(Char::isWhitespace)) {
+            "cluster pairing host is invalid"
+        }
+        require(port in 1024..65_535) { "cluster pairing port is out of bounds" }
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        val invite = pairingInvites.issue(
+            peerId = clusterNodeId(identity.fingerprint),
+            endpoint = PeerEndpoint(advertisedHost, port),
+            certificate = identity.encodedCertificate,
+            fingerprint = identity.fingerprint,
+            nowEpochMillis = System.currentTimeMillis(),
+        )
+        pairingInvites.encodeQrPayload(invite)
+    }
 
     suspend fun start(port: Int): ClusterControllerState {
         synchronized(this) {

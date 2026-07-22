@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.androml.cluster.core.ClusterPeer
+import dev.androml.cluster.core.ClusterPairingInviteIssuer
 import dev.androml.cluster.core.ClusterWorkload
 import dev.androml.cluster.core.NodeCapabilities
 import dev.androml.cluster.core.PeerEndpoint
@@ -44,6 +45,7 @@ import dev.androml.core.security.TlsIdentitySummary
 import dev.androml.core.security.X509CertificateCodec
 import dev.androml.core.security.summary
 import java.time.Instant
+import java.util.Base64
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +70,9 @@ fun ClusterScreen(
     var modelHashes by remember { mutableStateOf("") }
     var availableRamBytes by remember { mutableStateOf("0") }
     var listenerPort by remember { mutableStateOf("8789") }
+    var advertisedHost by remember { mutableStateOf("") }
+    var pairingPayload by remember { mutableStateOf("") }
+    var generatedPairingPayload by remember { mutableStateOf<String?>(null) }
     var selectedWorkloads by remember {
         mutableStateOf(setOf(ClusterWorkload.InferenceReplica, ClusterWorkload.WorkflowStage, ClusterWorkload.RagSearch))
     }
@@ -135,6 +140,51 @@ fun ClusterScreen(
                 throw error
             } catch (error: Throwable) {
                 message = error.message?.take(256) ?: "Peer could not be paired"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun importPairingPayload() {
+        try {
+            val invite = ClusterPairingInviteIssuer().decodeQrPayload(pairingPayload.trim())
+            require(invite.expiresAtEpochMillis > System.currentTimeMillis()) { "pairing invite has expired" }
+            peerId = invite.peerId.value
+            host = invite.endpoint.host
+            port = invite.endpoint.port.toString()
+            certificateText = Base64.getEncoder().encodeToString(
+                Base64.getUrlDecoder().decode(invite.certificateDerBase64),
+            )
+            message = "Invite verified for ${invite.peerId.value}; review the endpoint and pin it below"
+        } catch (error: Throwable) {
+            message = error.message?.take(256) ?: "Pairing invite could not be decoded"
+        }
+    }
+
+    fun generatePairingPayload() {
+        val hostValue = advertisedHost.trim()
+        val parsedPort = listenerPort.toIntOrNull()
+        if (hostValue.isBlank()) {
+            message = "Enter a LAN hostname or IP that the other phone can reach"
+            return
+        }
+        if (parsedPort == null || parsedPort !in 1024..65_535) {
+            message = "Listener port must be between 1024 and 65535"
+            return
+        }
+        busy = true
+        message = null
+        scope.launch {
+            try {
+                generatedPairingPayload = withContext(Dispatchers.IO) {
+                    controller.createPairingInvite(hostValue, parsedPort)
+                }
+                message = "Invite created; it expires in five minutes and can be used once"
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = error.message?.take(256) ?: "Pairing invite could not be created"
             } finally {
                 busy = false
             }
@@ -298,6 +348,24 @@ fun ClusterScreen(
                             Text(if (listenerState is ClusterControllerState.Running) "Stop" else "Start")
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = advertisedHost,
+                        onValueChange = { advertisedHost = it.take(253) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Advertised LAN host") },
+                        placeholder = { Text("192.168.1.22 or phone.local") },
+                        supportingText = { Text("Used in generated invites; do not use 127.0.0.1 for another phone") },
+                        singleLine = true,
+                        enabled = !busy,
+                    )
+                    Button(onClick = ::generatePairingPayload, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text("Generate one-time pairing invite")
+                    }
+                    generatedPairingPayload?.let { payload ->
+                        Text("Share this QR/deep-link payload", style = MaterialTheme.typography.labelLarge)
+                        SelectionContainer { Text(payload, style = MaterialTheme.typography.bodySmall) }
+                    }
                 }
             }
         }
@@ -339,6 +407,19 @@ fun ClusterScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = pairingPayload,
+                        onValueChange = { pairingPayload = it.take(32_000) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("QR/deep-link invite (optional)") },
+                        supportingText = { Text("Import fills the peer endpoint and certificate; verify them before pinning") },
+                        minLines = 3,
+                        enabled = !busy,
+                    )
+                    Button(onClick = ::importPairingPayload, enabled = !busy && pairingPayload.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+                        Text("Import and verify invite")
+                    }
+                    Spacer(Modifier.height(4.dp))
                     OutlinedTextField(
                         value = peerId,
                         onValueChange = { peerId = it.take(64) },
