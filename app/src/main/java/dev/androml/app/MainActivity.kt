@@ -56,6 +56,8 @@ import androidx.work.WorkManager
 import dev.androml.core.database.ModelCatalogRepository
 import dev.androml.core.database.ModelFileEntity
 import dev.androml.core.database.ModelRecordEntity
+import dev.androml.cluster.core.ClusterInferenceTask
+import dev.androml.cluster.core.ContentHash
 import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.DeviceProfile
@@ -166,6 +168,7 @@ private fun AndroMLApp() {
             PlaygroundScreen(
                 modifier = Modifier.padding(paddingValues),
                 serviceClient = inferenceServiceClient,
+                clusterController = application.clusterController,
                 deviceProfile = deviceProfile,
                 installedModelFiles = catalogFiles,
                 artifactStore = application.artifactStore,
@@ -232,6 +235,7 @@ private fun AndroMLApp() {
 private fun PlaygroundScreen(
     modifier: Modifier = Modifier,
     serviceClient: InferenceServiceClient,
+    clusterController: ClusterController,
     deviceProfile: DeviceProfile,
     installedModelFiles: List<ModelFileEntity>,
     artifactStore: FileArtifactStore,
@@ -243,6 +247,7 @@ private fun PlaygroundScreen(
     var isRunning by remember { mutableStateOf(false) }
     var runJob by remember { mutableStateOf<Job?>(null) }
     var selectedWorkload by remember { mutableStateOf(ModelWorkload.TextGeneration) }
+    var distributed by remember { mutableStateOf(false) }
     val runnableFiles = remember(installedModelFiles, selectedWorkload) {
         installedModelFiles
             .filter {
@@ -333,6 +338,30 @@ private fun PlaygroundScreen(
         runJob = scope.launch {
             var session: OpenedInferenceSession? = null
             try {
+                if (distributed && selectedWorkload == ModelWorkload.TextGeneration) {
+                    val artifactHash = selectedFile?.artifactSha256
+                        ?: error("a verified model artifact is required for distributed inference")
+                    val runtimeId = selectedRuntimeId ?: error("the model format has no runtime")
+                    val execution = withContext(Dispatchers.IO) {
+                        clusterController.executeBestInference(
+                            ClusterInferenceTask(
+                                modelHash = ContentHash.parse(artifactHash),
+                                prompt = prompt,
+                                maxNewTokens = 256,
+                                temperature = 0.7,
+                                contextTokens = 2_048,
+                                kvCacheBytesPerToken = 0L,
+                                cpuThreads = optimizedWithBenchmarks.configuration?.cpuThreads
+                                    ?: deviceProfile.cpuCoreCount.coerceIn(1, 8),
+                                useAcceleration = optimizedWithBenchmarks.configuration?.useAcceleration ?: false,
+                                runtimeId = runtimeId,
+                            ),
+                        )
+                    }
+                    output = execution.result.text
+                    status = "Complete · ${execution.placement.target.value} · ${execution.result.runtimeId}"
+                    return@launch
+                }
                 session = serviceClient.openSession(
                     model = model,
                     configuration = RuntimeConfiguration(
@@ -424,6 +453,13 @@ private fun PlaygroundScreen(
                             onClick = { selectedWorkload = ModelWorkload.TextEmbedding },
                             label = { Text("Embeddings") },
                         )
+                        if (selectedWorkload == ModelWorkload.TextGeneration) {
+                            FilterChip(
+                                selected = distributed,
+                                onClick = { distributed = !distributed },
+                                label = { Text("Distributed") },
+                            )
+                        }
                     }
                     Spacer(Modifier.height(6.dp))
                     if (runnableFiles.isEmpty()) {
@@ -454,6 +490,13 @@ private fun PlaygroundScreen(
                     Text("Runtime boundary", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text("$status\nNetwork access is absent from the runtime-service module.")
+                    if (distributed && selectedWorkload == ModelWorkload.TextGeneration) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Distributed mode sends the complete verified request to a paired, freshly-capable node over mTLS; the model must already be installed there.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         optimizedWithBenchmarks.selected?.let { candidate ->
