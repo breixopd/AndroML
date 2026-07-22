@@ -76,6 +76,28 @@ paths:
     get:
       responses:
         '200': { description: Local cluster status }
+  /api/v1/models:
+    $ref: '#/paths/~1v1~1models'
+  /api/v1/chat/completions:
+    $ref: '#/paths/~1v1~1chat~1completions'
+  /api/v1/responses:
+    $ref: '#/paths/~1v1~1responses'
+  /api/v1/embeddings:
+    $ref: '#/paths/~1v1~1embeddings'
+  /api/v1/rag/search:
+    $ref: '#/paths/~1v1~1rag~1search'
+  /api/v1/workflows:
+    $ref: '#/paths/~1v1~1workflows'
+  /api/v1/workflows/runs:
+    $ref: '#/paths/~1v1~1workflows~1runs'
+  /api/v1/tools:
+    $ref: '#/paths/~1v1~1tools'
+  /api/v1/tools/invoke:
+    $ref: '#/paths/~1v1~1tools~1invoke'
+  /api/v1/agents:
+    $ref: '#/paths/~1v1~1agents'
+  /api/v1/cluster:
+    $ref: '#/paths/~1v1~1cluster'
 components:
   securitySchemes:
     bearerAuth:

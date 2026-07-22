@@ -60,11 +60,23 @@ class AndroMlApiServerTest {
         assertEquals(HttpStatusCode.OK, rag.status)
         assertTrue(rag.bodyAsText().contains("answer"))
 
+        val nativeRag = client.get("/api/v1/rag/search?collection_id=docs&q=hello&top_k=4") {
+            header(HttpHeaders.Authorization, "Bearer ${ragKey.plaintextToken}")
+        }
+        assertEquals(HttpStatusCode.OK, nativeRag.status)
+        assertTrue(nativeRag.bodyAsText().contains("answer"))
+
         val tools = client.get("/v1/tools") {
             header(HttpHeaders.Authorization, "Bearer ${toolKey.plaintextToken}")
         }
         assertEquals(HttpStatusCode.OK, tools.status)
         assertTrue(tools.bodyAsText().contains("device.info"))
+
+        val nativeTools = client.get("/api/v1/tools") {
+            header(HttpHeaders.Authorization, "Bearer ${toolKey.plaintextToken}")
+        }
+        assertEquals(HttpStatusCode.OK, nativeTools.status)
+        assertTrue(nativeTools.bodyAsText().contains("device.info"))
     }
 
     @Test
@@ -167,6 +179,7 @@ class AndroMlApiServerTest {
         val openApi = client.get("/openapi.json")
         assertEquals(HttpStatusCode.OK, openApi.status)
         assertTrue(openApi.bodyAsText().contains("/v1/responses"))
+        assertTrue(openApi.bodyAsText().contains("/api/v1/responses"))
     }
 
     @Test

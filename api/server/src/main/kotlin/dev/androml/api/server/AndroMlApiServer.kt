@@ -282,6 +282,16 @@ class AndroMlApiServer(
         install(CallLogging)
         install(ContentNegotiation) { json(Json { explicitNulls = false }) }
         routing {
+            fun apiGet(path: String, handler: suspend ApplicationCall.() -> Unit) {
+                get("/v1$path") { handler(call) }
+                get("/api/v1$path") { handler(call) }
+            }
+
+            fun apiPost(path: String, handler: suspend ApplicationCall.() -> Unit) {
+                post("/v1$path") { handler(call) }
+                post("/api/v1$path") { handler(call) }
+            }
+
             get("/openapi.json") {
                 call.respondText(OPENAPI_DOCUMENT, ContentType.Application.Json)
             }
@@ -291,16 +301,18 @@ class AndroMlApiServer(
                     ContentType.Application.Json,
                 )
             }
-            get("/v1/models") {
-                if (!authorize(call, ApiScope.ModelsRead, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/models") {
+                val call = this
+                if (!authorize(call, ApiScope.ModelsRead, ApiRequestClass.ReadOnly)) return@apiGet
                 val data = buildJsonArray { models().forEach { model -> add(buildJsonObject { put("id", model); put("object", "model") }) } }
                 call.respondText(
                     Json.encodeToString(buildJsonObject { put("object", "list"); put("data", data) }),
                     ContentType.Application.Json,
                 )
             }
-            get("/v1/rag/search") {
-                if (!authorize(call, ApiScope.RagRead, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/rag/search") {
+                val call = this
+                if (!authorize(call, ApiScope.RagRead, ApiRequestClass.ReadOnly)) return@apiGet
                 val request = runCatching {
                     ApiRagSearchRequest(
                         collectionId = call.request.queryParameters["collection_id"]
@@ -311,7 +323,7 @@ class AndroMlApiServer(
                     )
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@get
+                    return@apiGet
                 }
                 try {
                     val response = features.ragSearch(request)
@@ -320,8 +332,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            get("/v1/workflows") {
-                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/workflows") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@apiGet
                 try {
                     val workflows = features.listWorkflows()
                     val data = buildJsonArray {
@@ -342,8 +355,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            post("/v1/workflows/runs") {
-                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@post
+            apiPost("/workflows/runs") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@apiPost
                 val request = runCatching {
                     val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
                     ApiWorkflowRunRequest(
@@ -353,7 +367,7 @@ class AndroMlApiServer(
                     )
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 try {
                     val response = features.runWorkflow(request)
@@ -362,8 +376,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            get("/v1/tools") {
-                if (!authorize(call, ApiScope.Tools, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/tools") {
+                val call = this
+                if (!authorize(call, ApiScope.Tools, ApiRequestClass.ReadOnly)) return@apiGet
                 try {
                     val data = buildJsonArray {
                         features.listTools().forEach { tool -> add(tool.toJson()) }
@@ -376,8 +391,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            post("/v1/tools/invoke") {
-                if (!authorize(call, ApiScope.Tools, ApiRequestClass.Mutating)) return@post
+            apiPost("/tools/invoke") {
+                val call = this
+                if (!authorize(call, ApiScope.Tools, ApiRequestClass.Mutating)) return@apiPost
                 val request = runCatching {
                     val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
                     ApiToolInvocationRequest(
@@ -387,7 +403,7 @@ class AndroMlApiServer(
                     )
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 try {
                     val response = features.invokeTool(request)
@@ -396,8 +412,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            get("/v1/agents") {
-                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/agents") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@apiGet
                 try {
                     val data = buildJsonArray {
                         features.listAgents().forEach { agent ->
@@ -415,8 +432,9 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            get("/v1/cluster") {
-                if (!authorize(call, ApiScope.Cluster, ApiRequestClass.ReadOnly)) return@get
+            apiGet("/cluster") {
+                val call = this
+                if (!authorize(call, ApiScope.Cluster, ApiRequestClass.ReadOnly)) return@apiGet
                 try {
                     val status = features.clusterStatus()
                     call.respondText(Json.encodeToString(status.toJson()), ContentType.Application.Json)
@@ -424,12 +442,13 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
-            post("/v1/chat/completions") {
-                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
+            apiPost("/chat/completions") {
+                val call = this
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
                 val body = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
                 if (body != null && body > config.maxRequestBodyBytes) {
                     call.respondText("{\"error\":\"request body too large\"}", status = HttpStatusCode.PayloadTooLarge)
-                    return@post
+                    return@apiPost
                 }
                 val request = runCatching {
                     ChatCompletionRequest.parse(call.receiveBoundedText(config.maxRequestBodyBytes))
@@ -447,7 +466,7 @@ class AndroMlApiServer(
                         },
                         status = status,
                     )
-                    return@post
+                    return@apiPost
                 }
                 if (request.stream) {
                     call.respondTextWriter(ContentType.Text.EventStream) {
@@ -477,17 +496,18 @@ class AndroMlApiServer(
                     call.respondText(Json.encodeToString(response), ContentType.Application.Json)
                 }
             }
-            post("/v1/embeddings") {
-                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
+            apiPost("/embeddings") {
+                val call = this
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
                 val request = runCatching {
                     EmbeddingsRequest.parse(call.receiveBoundedJson(config.maxRequestBodyBytes))
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 val vectors = runCatching { inference.embeddings(request) }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 if (vectors.size != request.inputs.size || vectors.any { vector ->
                         vector.isEmpty() || vector.size > MAX_EMBEDDING_DIMENSION || vector.any { !it.isFinite() }
@@ -495,7 +515,7 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(
                         IllegalStateException("embedding runtime returned an invalid vector batch"),
                     )
-                    return@post
+                    return@apiPost
                 }
                 val data = buildJsonArray {
                     vectors.forEachIndexed { index, vector ->
@@ -521,13 +541,14 @@ class AndroMlApiServer(
                     ContentType.Application.Json,
                 )
             }
-            post("/v1/responses") {
-                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@post
+            apiPost("/responses") {
+                val call = this
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
                 val request = runCatching {
                     ResponsesRequest.parse(call.receiveBoundedJson(config.maxRequestBodyBytes))
                 }.getOrElse { error ->
                     call.respondApiFeatureError(error)
-                    return@post
+                    return@apiPost
                 }
                 val chatRequest = ChatCompletionRequest(
                     model = request.model,
@@ -742,7 +763,13 @@ private val OPENAPI_DOCUMENT: String = Json.encodeToString(buildJsonObject {
             "/v1/workflows/runs" to "post",
             "/v1/agents" to "get",
             "/v1/cluster" to "get",
-        ).forEach { (path, method) ->
+        ).flatMap { (path, method) ->
+            if (path.startsWith("/v1/")) {
+                listOf(path to method, path.replaceFirst("/v1", "/api/v1") to method)
+            } else {
+                listOf(path to method)
+            }
+        }.forEach { (path, method) ->
             put(path, buildJsonObject { put(method, buildJsonObject { put("responses", buildJsonObject { put("200", buildJsonObject { put("description", "Success") }) }) }) })
         }
     })
