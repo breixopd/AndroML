@@ -52,6 +52,8 @@ Merges to `main` run Release Please. It opens or updates a release PR from Conve
 
 See [the test-release policy](docs/publishing/test-release-policy.md) for the exact gate and artifact verification rules.
 
+The security boundaries and data-flow assumptions are documented in [the v1 threat model](docs/architecture/threat-model.md) and [data-flow reference](docs/architecture/data-flow.md).
+
 ## License
 
 AndroML-owned code is Apache-2.0. Model files, runtime libraries, and third-party assets retain their own licenses, which the app will display before use.

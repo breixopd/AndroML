@@ -138,6 +138,14 @@ class AndroMlApiServerTest {
         }
         assertEquals(HttpStatusCode.OK, response.status)
         assertTrue(response.bodyAsText().contains("data: [DONE]"))
+
+        val nativeResponse = client.post("/api/v1/chat/completions") {
+            header(HttpHeaders.Authorization, "Bearer ${generated.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"model\":\"fake\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+        }
+        assertEquals(HttpStatusCode.OK, nativeResponse.status)
+        assertTrue(nativeResponse.bodyAsText().contains("chat.completion"))
     }
 
     @Test
