@@ -43,6 +43,7 @@ import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
+import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ThermalStatus
 import dev.androml.core.security.MtlsContextFactory
@@ -53,6 +54,7 @@ import dev.androml.runtime.api.InferenceRequest
 import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeId
+import dev.androml.runtime.api.RuntimePackCatalog
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.core.workflow.WorkflowDocument
 import dev.androml.core.workflow.WorkflowValue
@@ -644,6 +646,14 @@ class ClusterController(
                 val modelHash = task.modelHash
                     ?: throw IllegalArgumentException("model workflow stage requires a model hash")
                 val profile = deviceProfileProvider()
+                val modelFile = catalogRepository.fileForArtifact(modelHash.value)
+                    ?: throw IllegalArgumentException("workflow model artifact is not in the local catalog")
+                val runtimeId = ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+                    ?.let(RuntimeId::parse)
+                    ?: throw IllegalArgumentException("workflow model format is unsupported")
+                check(RuntimePackCatalog.find(runtimeId)?.usable == true) {
+                    "workflow model runtime is not bundled in this build"
+                }
                 val result = ClusterInferenceCodec.decodeResult(
                     executeLocalInference(
                         ClusterInferenceTask(
@@ -655,7 +665,7 @@ class ClusterController(
                             kvCacheBytesPerToken = 0L,
                             cpuThreads = profile.cpuCoreCount.coerceIn(1, 8),
                             useAcceleration = false,
-                            runtimeId = RuntimeId.parse("litertlm").value,
+                            runtimeId = runtimeId.value,
                         ),
                     ),
                 )
@@ -692,6 +702,11 @@ class ClusterController(
             ?: throw IllegalArgumentException("requested model artifact is not in the local catalog")
         check(modelFile.artifactSha256 == task.modelHash.value && artifactStore.contains(task.modelHash.value)) {
             "requested model artifact is not installed"
+        }
+        val expectedRuntimeId = ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+            ?: throw IllegalArgumentException("requested model format is unsupported")
+        require(expectedRuntimeId == task.runtimeId) {
+            "requested runtime does not match the model artifact format"
         }
         val modelPath = artifactStore.fileFor(task.modelHash.value)
         val descriptor = ParcelFileDescriptor.open(modelPath, ParcelFileDescriptor.MODE_READ_ONLY)

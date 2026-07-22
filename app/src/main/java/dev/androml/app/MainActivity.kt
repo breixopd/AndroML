@@ -260,6 +260,11 @@ private fun PlaygroundScreen(
     val scope = rememberCoroutineScope()
     val optimizer = remember { AutoOptimizer() }
     val selectedRuntimeId = selectedFile?.let { ModelFormatClassifier.forPath(it.path)?.runtimeId }
+    val compatibleRuntimeDescriptors = selectedRuntimeId
+        ?.let { RuntimePackCatalog.find(RuntimeId.parse(it)) }
+        ?.takeIf { it.usable }
+        ?.let { listOf(it.descriptor) }
+        .orEmpty()
     val model = remember(selectedFile?.artifactSha256, selectedFile?.sizeBytes, selectedWorkload) {
         ModelRequirements(
             workload = selectedWorkload,
@@ -271,11 +276,7 @@ private fun PlaygroundScreen(
         optimizer.select(
             device = deviceProfile,
             model = model,
-        runtimes = if (selectedFile == null) {
-                emptyList()
-            } else {
-                RuntimePackCatalog.bundled.map { it.descriptor }
-            },
+            runtimes = compatibleRuntimeDescriptors,
         )
     }
     val benchmarkEntities by remember(deviceProfile.stableKey, selectedFile?.artifactSha256) {
@@ -301,7 +302,7 @@ private fun PlaygroundScreen(
             optimizer.select(
                 device = deviceProfile,
                 model = model,
-                runtimes = RuntimePackCatalog.bundled.map { it.descriptor },
+                runtimes = compatibleRuntimeDescriptors,
                 benchmarks = benchmarkObservations,
             )
         }

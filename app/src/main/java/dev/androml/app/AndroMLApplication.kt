@@ -39,6 +39,7 @@ import dev.androml.runtime.api.RuntimePackCatalog
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
 import dev.androml.runtime.llamacpp.LlamaCppRuntimeAvailability
+import dev.androml.optimizer.AutoOptimizer
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -336,6 +337,8 @@ private class IsolatedRuntimeApiGateway(
     private val artifactStore: FileArtifactStore,
     private val deviceProfileProvider: () -> dev.androml.core.model.DeviceProfile,
 ) : ApiInferenceGateway {
+    private val optimizer = AutoOptimizer()
+
     override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flow {
         val device = deviceProfileProvider()
         val modelFile = catalogRepository.filesForModelKey(request.model)
@@ -348,6 +351,12 @@ private class IsolatedRuntimeApiGateway(
         check(RuntimePackCatalog.find(runtimeId)?.usable == true) {
             "the runtime for ${modelFile.path.substringAfterLast('.').uppercase()} is not bundled in this build"
         }
+        val modelRequirements = ModelRequirements(
+            workload = ModelWorkload.TextGeneration,
+            weightBytes = modelFile.sizeBytes,
+            contextTokens = 2_048,
+        )
+        val configuration = optimizedConfiguration(device, modelRequirements, runtimeId)
         val artifactHash = modelFile.artifactSha256
             ?: throw IllegalArgumentException("requested model artifact is not verified")
         check(artifactStore.contains(artifactHash)) { "requested model artifact is missing" }
@@ -358,16 +367,8 @@ private class IsolatedRuntimeApiGateway(
         var session: OpenedInferenceSession? = null
         try {
             session = inferenceServiceClient.openSession(
-                model = ModelRequirements(
-                    workload = ModelWorkload.TextGeneration,
-                    weightBytes = modelFile.sizeBytes,
-                    contextTokens = 2048,
-                ),
-                configuration = RuntimeConfiguration(
-                    cpuThreads = device.cpuCoreCount.coerceIn(1, 8),
-                    contextTokens = 2048,
-                    useAcceleration = false,
-                ),
+                model = modelRequirements,
+                configuration = configuration,
                 runtimeId = runtimeId,
                 modelFile = descriptor,
             )
@@ -407,6 +408,12 @@ private class IsolatedRuntimeApiGateway(
         check(artifactStore.contains(artifactHash)) { "requested model artifact is missing" }
         val runtimeId = RuntimeId.parse(ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
             ?: throw IllegalArgumentException("requested model format is unsupported"))
+        val modelRequirements = ModelRequirements(
+            workload = ModelWorkload.TextEmbedding,
+            weightBytes = modelFile.sizeBytes,
+            contextTokens = 512,
+        )
+        val configuration = optimizedConfiguration(device, modelRequirements, runtimeId)
         val descriptor = ParcelFileDescriptor.open(
             artifactStore.fileFor(artifactHash),
             ParcelFileDescriptor.MODE_READ_ONLY,
@@ -414,16 +421,8 @@ private class IsolatedRuntimeApiGateway(
         var session: OpenedInferenceSession? = null
         try {
             session = inferenceServiceClient.openSession(
-                model = ModelRequirements(
-                    workload = ModelWorkload.TextEmbedding,
-                    weightBytes = modelFile.sizeBytes,
-                    contextTokens = 512,
-                ),
-                configuration = RuntimeConfiguration(
-                    cpuThreads = device.cpuCoreCount.coerceIn(1, 8),
-                    contextTokens = 512,
-                    useAcceleration = false,
-                ),
+                model = modelRequirements,
+                configuration = configuration,
                 runtimeId = runtimeId,
                 modelFile = descriptor,
             )
@@ -448,6 +447,27 @@ private class IsolatedRuntimeApiGateway(
             session?.let(inferenceServiceClient::closeSession)
             descriptor.close()
         }
+    }
+
+    private fun optimizedConfiguration(
+        device: dev.androml.core.model.DeviceProfile,
+        model: ModelRequirements,
+        runtimeId: RuntimeId,
+    ): RuntimeConfiguration {
+        val descriptor = RuntimePackCatalog.find(runtimeId)?.takeIf { it.usable }?.descriptor
+            ?: throw IllegalArgumentException("requested runtime is not bundled")
+        val result = optimizer.select(
+            device = device,
+            model = model,
+            runtimes = listOf(descriptor),
+        )
+        val configuration = result.configuration
+            ?: throw IllegalStateException("device cannot safely run the requested model")
+        return RuntimeConfiguration(
+            cpuThreads = configuration.cpuThreads,
+            contextTokens = configuration.contextTokens,
+            useAcceleration = configuration.useAcceleration,
+        )
     }
 }
 
