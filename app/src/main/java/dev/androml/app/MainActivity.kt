@@ -366,7 +366,7 @@ private fun PlaygroundScreen(
                                             modelArtifactSha256 = hash,
                                             profile = "Balanced",
                                             tokensPerSecond = event.generatedTokens / seconds,
-                                            firstTokenLatencyMs = event.durationMs,
+                                            firstTokenLatencyMs = event.durationMs.toDouble(),
                                             outputValid = output.isNotBlank(),
                                         )
                                     }
@@ -1275,6 +1275,7 @@ private fun HomeScreenPreview() {
                 hasVulkan = true,
             ),
             modelCount = 0,
+            bundledRuntimeCount = RuntimePackCatalog.bundled.size,
         )
     }
 }
