@@ -18,6 +18,7 @@ import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -39,14 +40,23 @@ class RuntimeRagEmbeddingProvider(
     override val dimension: Int? = null
     override val available: Boolean = true
     private val requestMutex = Mutex()
+    private var runtimeEnabled: Boolean? = null
 
     override suspend fun embed(text: String): FloatArray = requestMutex.withLock {
-        runCatching { embedWithRuntime(text) }
-            .onSuccess { selectedModelKey = "runtime-auto-text-embedding-v1" }
-            .getOrElse {
+        if (runtimeEnabled == false) return@withLock LocalHashEmbedding.embed(text)
+        runCatching { embedWithRuntime(text) }.fold(
+            onSuccess = {
+                runtimeEnabled = true
+                selectedModelKey = "runtime-auto-text-embedding-v1"
+                it
+            },
+            onFailure = {
+                if (it is CancellationException) throw it
+                runtimeEnabled = false
                 selectedModelKey = LocalHashEmbedding.MODEL_KEY
                 LocalHashEmbedding.embed(text)
-            }
+            },
+        )
     }
 
     private suspend fun embedWithRuntime(text: String): FloatArray = withContext(Dispatchers.IO) {

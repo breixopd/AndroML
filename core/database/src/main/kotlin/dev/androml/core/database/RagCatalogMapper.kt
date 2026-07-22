@@ -97,7 +97,10 @@ object RagCatalogMapper {
             byteSize = byteSize,
             observedAtEpochMillis = observedAtEpochMillis,
         )
-        require(vectors.map(RagVectorEntity::chunkId).toSet() == snapshot.chunks.map(RagChunkEntity::chunkId).toSet()) {
+        require(
+            vectors.size == snapshot.chunks.size &&
+                vectors.map(RagVectorEntity::chunkId).toSet() == snapshot.chunks.map(RagChunkEntity::chunkId).toSet(),
+        ) {
             "embedding vectors must cover every chunk exactly once"
         }
         require(vectors.all { it.dimension in 1..4096 && it.vector.size == it.dimension * Float.SIZE_BYTES }) {
