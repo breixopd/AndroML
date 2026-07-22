@@ -8,6 +8,9 @@ import dev.androml.cluster.core.ClusterCapabilityAdvertisement
 import dev.androml.cluster.core.ClusterInferenceCodec
 import dev.androml.cluster.core.ClusterInferenceResult
 import dev.androml.cluster.core.ClusterInferenceTask
+import dev.androml.cluster.core.ClusterModelTransferAck
+import dev.androml.cluster.core.ClusterModelTransferChunk
+import dev.androml.cluster.core.ClusterModelTransferCodec
 import dev.androml.cluster.core.ClusterJobId
 import dev.androml.cluster.core.ClusterNode
 import dev.androml.cluster.core.ClusterPeer
@@ -46,6 +49,9 @@ import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ThermalStatus
+import dev.androml.core.model.HuggingFaceFileDescriptor
+import dev.androml.core.model.HuggingFaceModelReference
+import dev.androml.core.model.HuggingFaceRepositoryMetadata
 import dev.androml.core.security.MtlsContextFactory
 import dev.androml.core.security.TlsIdentityStore
 import dev.androml.core.security.X509CertificateCodec
@@ -60,6 +66,7 @@ import dev.androml.core.workflow.WorkflowDocument
 import dev.androml.core.workflow.WorkflowValue
 import dev.androml.core.workflow.WorkflowValueCodec
 import java.util.UUID
+import java.io.ByteArrayInputStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -459,6 +466,92 @@ class ClusterController(
         throw lastFailure ?: IllegalStateException("workflow stage deadline expired")
     }
 
+    /** Transfers a verified artifact to a paired node only after explicit owner approval. */
+    suspend fun transferModel(
+        peerId: PeerId,
+        artifactHash: ContentHash,
+        ownerApproved: Boolean,
+        timeoutMillis: Long = 10 * 60 * 1_000L,
+    ): ClusterModelTransferAck = withContext(Dispatchers.IO) {
+        require(ownerApproved) { "model transfer requires explicit owner approval" }
+        require(timeoutMillis in 1_000L..30 * 60 * 1_000L) { "model transfer timeout is out of bounds" }
+        check(artifactStore.contains(artifactHash.value)) { "model artifact is not installed" }
+        val file = catalogRepository.fileForArtifact(artifactHash.value)
+            ?: throw IllegalArgumentException("model artifact metadata is unavailable")
+        val model = catalogRepository.snapshotModels().firstOrNull { record ->
+            record.modelId == file.modelId && record.revision == file.revision
+        } ?: throw IllegalArgumentException("model repository metadata is unavailable")
+        val reference = HuggingFaceModelReference.parse(file.modelId, file.revision)
+        val totalSize = file.sizeBytes
+        require(totalSize > 0L) { "empty model artifacts cannot be transferred" }
+        val peer = peerRepository.snapshot().firstOrNull { it.peer.id == peerId }
+            ?: throw IllegalArgumentException("cluster peer does not exist")
+        check(peer.peer.paired && !peer.peer.revoked) { "cluster peer is not paired" }
+        check(ClusterWorkload.ModelTransfer in peer.peer.capabilities.supportedWorkloads) {
+            "cluster peer does not support model transfer"
+        }
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        val peerCertificate = X509CertificateCodec.decodeDer(peer.certificateDer)
+        val transferId = "transfer-${UUID.randomUUID()}"
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        var offset = 0L
+        var lastAck = ClusterModelTransferAck(transferId, artifactHash, 0L, committed = false)
+        while (offset < totalSize && System.currentTimeMillis() < deadline) {
+            val bytes = readChunk(artifactHash.value, offset, totalSize)
+            val transferChunk = ClusterModelTransferChunk(
+                transferId = transferId,
+                artifactHash = artifactHash,
+                totalSizeBytes = totalSize,
+                offsetBytes = offset,
+                chunk = bytes,
+                finalChunk = offset + bytes.size == totalSize,
+                modelId = reference.modelId.value,
+                revision = reference.revision.value,
+                path = file.path,
+                license = model.license,
+                isPrivate = model.isPrivate,
+                isGated = model.isGated,
+            )
+            val payload = ClusterModelTransferCodec.encodeChunk(transferChunk)
+            val request = ClusterExecutionRequest(
+                sourcePeerId = clusterNodeId(identity.fingerprint),
+                request = ClusterRequest(
+                    jobId = ClusterJobId.parse("$transferId-${offset.toString(16)}"),
+                    attempt = 1,
+                    workload = ClusterWorkload.ModelTransfer,
+                    modelKey = artifactHash.value,
+                    modelHash = null,
+                    requiredRamBytes = 0L,
+                    deadlineEpochMillis = deadline,
+                    payloadHash = ContentHash.parse(sha256(payload)),
+                    idempotencyKey = "$transferId:$offset",
+                ),
+                payload = payload,
+            )
+            val response = ClusterExecutionClient(
+                clientIdentity = identity,
+                trustedServerCertificate = peerCertificate,
+                readTimeoutMillis = (deadline - System.currentTimeMillis()).coerceAtLeast(1_000L).toInt(),
+            ).execute(peer.peer.endpoint, request)
+            if (response.status != ClusterExecutionStatus.Completed &&
+                response.status != ClusterExecutionStatus.AlreadyCompleted
+            ) {
+                throw IllegalStateException(response.safeMessage ?: "model transfer failed")
+            }
+            val output = response.output ?: throw IllegalStateException("model transfer returned no acknowledgement")
+            lastAck = ClusterModelTransferCodec.decodeAck(output)
+            require(lastAck.transferId == transferId && lastAck.artifactHash == artifactHash) {
+                "model transfer acknowledgement does not match the request"
+            }
+            require(lastAck.nextOffsetBytes in (offset + 1)..totalSize) {
+                "model transfer acknowledgement did not advance"
+            }
+            offset = lastAck.nextOffsetBytes
+        }
+        check(lastAck.committed && offset == totalSize) { "model transfer did not commit before its deadline" }
+        lastAck
+    }
+
     suspend fun executeRemote(
         peerId: PeerId,
         task: ClusterInferenceTask,
@@ -537,8 +630,100 @@ class ClusterController(
                         executeLocalWorkflowStage(ClusterWorkflowCodec.decodeTask(request.payload))
                     }
                 }
+                ClusterWorkload.ModelTransfer -> runBlocking(Dispatchers.IO) {
+                    executeLocalModelTransfer(request.payload)
+                }
             }
         }
+    }
+
+    private suspend fun executeLocalModelTransfer(payload: ByteArray): ByteArray {
+        val chunk = ClusterModelTransferCodec.decodeChunk(payload)
+        require(chunk.isPrivate || chunk.license != null) {
+            "model transfer metadata must include a license or private declaration"
+        }
+        if (artifactStore.contains(chunk.artifactHash.value)) {
+            if (catalogRepository.fileForArtifact(chunk.artifactHash.value) == null) {
+                registerTransferredMetadata(chunk)
+            }
+            return ClusterModelTransferCodec.encodeAck(
+                ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, chunk.totalSizeBytes, committed = true),
+            )
+        }
+        val staged = artifactStore.beginResumable(
+            key = "cluster-${chunk.transferId}-${chunk.artifactHash.value.take(16)}",
+            expectedSha256 = chunk.artifactHash.value,
+            expectedSizeBytes = chunk.totalSizeBytes,
+        )
+        staged.use { resumable ->
+            val current = resumable.bytesWritten
+            if (current == chunk.totalSizeBytes && chunk.finalChunk) {
+                resumable.commit()
+                registerTransferredMetadata(chunk)
+                return ClusterModelTransferCodec.encodeAck(
+                    ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, chunk.totalSizeBytes, committed = true),
+                )
+            }
+            if (current > chunk.offsetBytes) {
+                return ClusterModelTransferCodec.encodeAck(
+                    ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, current, committed = false),
+                )
+            }
+            require(current == chunk.offsetBytes) { "model transfer chunk is not contiguous" }
+            resumable.appendFrom(ByteArrayInputStream(chunk.chunk), maxBytes = chunk.chunk.size.toLong())
+            val nextOffset = resumable.bytesWritten
+            val committed = if (chunk.finalChunk) {
+                require(nextOffset == chunk.totalSizeBytes) { "final model transfer chunk is incomplete" }
+                resumable.commit()
+                registerTransferredMetadata(chunk)
+                true
+            } else {
+                false
+            }
+            return ClusterModelTransferCodec.encodeAck(
+                ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, nextOffset, committed),
+            )
+        }
+    }
+
+    private suspend fun registerTransferredMetadata(chunk: ClusterModelTransferChunk) {
+        val reference = HuggingFaceModelReference.parse(chunk.modelId, chunk.revision)
+        catalogRepository.saveMetadata(
+            HuggingFaceRepositoryMetadata(
+                reference = reference,
+                files = listOf(
+                    HuggingFaceFileDescriptor(
+                        path = chunk.path,
+                        sizeBytes = chunk.totalSizeBytes,
+                        sha256 = chunk.artifactHash.value,
+                    ),
+                ),
+                isPrivate = chunk.isPrivate,
+                isGated = chunk.isGated,
+                license = chunk.license,
+            ),
+        )
+        catalogRepository.markArtifactVerified(reference, chunk.path, chunk.artifactHash.value)
+    }
+
+    private fun readChunk(artifactHash: String, offset: Long, totalSize: Long): ByteArray {
+        val length = minOf(ClusterModelTransferChunk.MAX_CHUNK_BYTES.toLong(), totalSize - offset).toInt()
+        val bytes = ByteArray(length)
+        artifactStore.open(artifactHash).use { input ->
+            var skipped = 0L
+            while (skipped < offset) {
+                val count = input.skip(offset - skipped)
+                if (count <= 0L) throw IllegalStateException("model artifact could not seek to transfer offset")
+                skipped += count
+            }
+            var read = 0
+            while (read < bytes.size) {
+                val count = input.read(bytes, read, bytes.size - read)
+                if (count < 0) throw IllegalStateException("model artifact ended before its declared size")
+                read += count
+            }
+        }
+        return bytes
     }
 
     private suspend fun executeLocalRag(taskPayload: ByteArray): ByteArray {
@@ -782,6 +967,7 @@ class ClusterController(
                     ClusterWorkload.InferenceReplica,
                     ClusterWorkload.WorkflowStage,
                     ClusterWorkload.RagSearch,
+                    ClusterWorkload.ModelTransfer,
                 ),
                 modelHashes = catalogRepository.installedArtifactHashes(),
                 maxConcurrentJobs = 1,

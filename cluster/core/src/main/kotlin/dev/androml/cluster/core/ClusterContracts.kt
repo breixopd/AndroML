@@ -43,6 +43,7 @@ enum class ClusterWorkload {
     InferenceReplica,
     WorkflowStage,
     RagSearch,
+    ModelTransfer,
 }
 
 data class PeerEndpoint(
