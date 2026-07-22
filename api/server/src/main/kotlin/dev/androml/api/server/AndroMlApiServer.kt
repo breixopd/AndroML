@@ -489,6 +489,14 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                     return@post
                 }
+                if (vectors.size != request.inputs.size || vectors.any { vector ->
+                        vector.isEmpty() || vector.size > MAX_EMBEDDING_DIMENSION || vector.any { !it.isFinite() }
+                    }) {
+                    call.respondApiFeatureError(
+                        IllegalStateException("embedding runtime returned an invalid vector batch"),
+                    )
+                    return@post
+                }
                 val data = buildJsonArray {
                     vectors.forEachIndexed { index, vector ->
                         add(buildJsonObject {
@@ -721,6 +729,8 @@ private fun deterministicEmbedding(text: String): List<Double> {
     val norm = kotlin.math.sqrt(vector.sumOf { it * it }).takeIf { it > 0.0 } ?: 1.0
     return vector.map { it / norm }
 }
+
+private const val MAX_EMBEDDING_DIMENSION = 4096
 
 private fun estimateTokens(value: String): Int =
     value.split(Regex("\\s+")).count(String::isNotBlank).coerceAtLeast(1)

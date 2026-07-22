@@ -133,6 +133,9 @@ class AndroMlApiServerTest {
         val generated = ApiKeyCodec.generate("test", setOf(ApiScope.Inference), nowEpochMillis = 1L)
         val gateway = object : ApiInferenceGateway {
             override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flowOf(ChatDelta("hello"))
+
+            override suspend fun embeddings(request: EmbeddingsRequest): List<List<Double>> =
+                request.inputs.map { listOf(it.length.toDouble(), 1.0) }
         }
         val server = AndroMlApiServer(
             config = ApiServerConfig(),
@@ -149,6 +152,7 @@ class AndroMlApiServerTest {
         }
         assertEquals(HttpStatusCode.OK, embeddings.status)
         assertTrue(embeddings.bodyAsText().contains("embedding"))
+        assertTrue(embeddings.bodyAsText().contains("5.0"))
         assertTrue(embeddings.bodyAsText().contains("prompt_tokens"))
 
         val responses = client.post("/v1/responses") {
