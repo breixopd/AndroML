@@ -1,12 +1,14 @@
 package dev.androml.core.database
 
 import dev.androml.core.rag.RagDocument
+import dev.androml.core.rag.LocalHashEmbedding
 import dev.androml.core.rag.TextChunk
 
 data class RagCatalogSnapshot(
     val document: RagDocumentEntity,
     val chunks: List<RagChunkEntity>,
     val searchRows: List<RagChunkSearchEntity>,
+    val vectors: List<RagVectorEntity>,
 )
 
 object RagCatalogMapper {
@@ -63,6 +65,17 @@ object RagCatalogMapper {
                     page = chunk.page,
                     section = chunk.section,
                     ordinal = chunk.ordinal,
+                )
+            },
+            vectors = mappedChunks.map { chunk ->
+                RagVectorEntity(
+                    collectionId = chunk.collectionId,
+                    documentId = chunk.documentId,
+                    chunkId = chunk.chunkId,
+                    modelKey = LocalHashEmbedding.MODEL_KEY,
+                    dimension = LocalHashEmbedding.DIMENSION,
+                    vector = LocalHashEmbedding.encode(LocalHashEmbedding.embed(chunk.text)),
+                    updatedAtEpochMillis = observedAtEpochMillis,
                 )
             },
         )

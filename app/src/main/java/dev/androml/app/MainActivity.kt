@@ -60,6 +60,7 @@ import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ModelRequirements
+import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.ReleasePolicy
 import dev.androml.core.network.HuggingFaceEndpoints
@@ -240,9 +241,12 @@ private fun PlaygroundScreen(
     var status by remember { mutableStateOf("Runtime service not checked") }
     var isRunning by remember { mutableStateOf(false) }
     var runJob by remember { mutableStateOf<Job?>(null) }
-    val runnableFiles = remember(installedModelFiles) {
+    var selectedWorkload by remember { mutableStateOf(ModelWorkload.TextGeneration) }
+    val runnableFiles = remember(installedModelFiles, selectedWorkload) {
         installedModelFiles
-            .filter { it.artifactSha256 != null && it.path.endsWith(".litertlm", ignoreCase = true) }
+            .filter {
+                it.artifactSha256 != null && ModelFormatClassifier.supports(it.path, selectedWorkload)
+            }
             .take(16)
     }
     var selectedArtifactSha256 by remember { mutableStateOf<String?>(null) }
@@ -254,14 +258,15 @@ private fun PlaygroundScreen(
     val selectedFile = runnableFiles.firstOrNull { it.artifactSha256 == selectedArtifactSha256 }
     val scope = rememberCoroutineScope()
     val optimizer = remember { AutoOptimizer() }
-    val model = remember(selectedFile?.artifactSha256, selectedFile?.sizeBytes) {
+    val selectedRuntimeId = selectedFile?.let { ModelFormatClassifier.forPath(it.path)?.runtimeId }
+    val model = remember(selectedFile?.artifactSha256, selectedFile?.sizeBytes, selectedWorkload) {
         ModelRequirements(
-            workload = ModelWorkload.TextGeneration,
+            workload = selectedWorkload,
             weightBytes = selectedFile?.sizeBytes ?: 1L,
             contextTokens = 2048,
         )
     }
-    val optimization = remember(deviceProfile, selectedFile?.artifactSha256, selectedFile?.sizeBytes) {
+    val optimization = remember(deviceProfile, selectedFile?.artifactSha256, selectedFile?.sizeBytes, selectedWorkload) {
         optimizer.select(
             device = deviceProfile,
             model = model,
@@ -334,7 +339,7 @@ private fun PlaygroundScreen(
                         contextTokens = 2048,
                         useAcceleration = optimizedWithBenchmarks.configuration?.useAcceleration ?: false,
                     ),
-                    runtimeId = RuntimeId.parse("litertlm"),
+                    runtimeId = RuntimeId.parse(selectedRuntimeId ?: error("no runtime is selected")),
                     modelFile = selectedFile?.artifactSha256?.let { hash ->
                         ParcelFileDescriptor.open(
                             artifactStore.fileFor(hash),
@@ -362,7 +367,7 @@ private fun PlaygroundScreen(
                                     runCatching {
                                         benchmarkRepository.record(
                                             deviceKey = deviceProfile.stableKey,
-                                            runtimeId = session?.runtimeId?.value ?: "litertlm",
+                                            runtimeId = session?.runtimeId?.value ?: selectedRuntimeId.orEmpty(),
                                             modelArtifactSha256 = hash,
                                             profile = "Balanced",
                                             tokensPerSecond = event.generatedTokens / seconds,
@@ -404,10 +409,29 @@ private fun PlaygroundScreen(
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Installed text models", style = MaterialTheme.typography.titleMedium)
+                    Text("Installed runnable models", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = selectedWorkload == ModelWorkload.TextGeneration,
+                            onClick = { selectedWorkload = ModelWorkload.TextGeneration },
+                            label = { Text("Chat") },
+                        )
+                        FilterChip(
+                            selected = selectedWorkload == ModelWorkload.TextEmbedding,
+                            onClick = { selectedWorkload = ModelWorkload.TextEmbedding },
+                            label = { Text("Embeddings") },
+                        )
+                    }
                     Spacer(Modifier.height(6.dp))
                     if (runnableFiles.isEmpty()) {
-                        Text("No verified .litertlm artifact is installed. Discover and verify one from Hugging Face first.")
+                        Text(
+                            if (selectedWorkload == ModelWorkload.TextGeneration) {
+                                "No verified .litertlm artifact is installed. Discover and verify one from Hugging Face first."
+                            } else {
+                                "No verified .onnx or .ort embedding artifact is installed."
+                            },
+                        )
                     } else {
                         Text("Select a content-addressed model artifact:", style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(6.dp))
@@ -439,7 +463,10 @@ private fun PlaygroundScreen(
                     AssistChip(
                         onClick = {},
                         label = {
-                            Text(if (selectedFile == null) "No runtime selected" else "LiteRT-LM · CPU")
+                            Text(
+                                if (selectedFile == null) "No runtime selected"
+                                else "${selectedRuntimeId ?: "unknown"} · ${selectedWorkload.name}",
+                            )
                         },
                     )
                 }
@@ -448,13 +475,19 @@ private fun PlaygroundScreen(
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Text generation smoke test", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (selectedWorkload == ModelWorkload.TextGeneration) "Text generation"
+                        else "Text embedding",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = prompt,
                         onValueChange = { prompt = it.take(InferenceRequest.MAX_PROMPT_CHARS) },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Prompt") },
+                        label = {
+                            Text(if (selectedWorkload == ModelWorkload.TextGeneration) "Prompt" else "Text to embed")
+                        },
                         minLines = 3,
                     )
                     Spacer(Modifier.height(8.dp))

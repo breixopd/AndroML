@@ -106,6 +106,7 @@ dependencies {
     implementation(project(":cluster:transport"))
     implementation(project(":runtime:api"))
     implementation(project(":runtime:litertlm"))
+    implementation(project(":runtime:onnx"))
     implementation(project(":runtime:service"))
     implementation(project(":optimizer"))
     implementation(libs.androidx.core.ktx)

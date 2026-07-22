@@ -618,6 +618,13 @@ private fun ApiRagSearchResponse.toJson() = buildJsonObject {
                 put("source", result.source)
                 put("text", result.text)
                 put("score", result.score)
+                put("lexical_score", result.lexicalScore)
+                put("semantic_score", result.semanticScore)
+                result.excerptHash?.let { put("excerpt_hash", it) }
+                result.startOffset?.let { put("start_offset", it) }
+                result.endOffset?.let { put("end_offset", it) }
+                result.page?.let { put("page", it) }
+                result.section?.let { put("section", it) }
             })
         }
     })

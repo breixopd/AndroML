@@ -208,7 +208,7 @@ fun RagScreen(
                     results = withContext(Dispatchers.IO) {
                         repository.search(CollectionId.parse(targetCollection), query.trim())
                     }.map { chunk -> RagScreenResult("this phone", chunk, null) }
-                    message = "${results.size} lexical result(s)"
+                    message = "${results.size} hybrid result(s) with persisted vectors"
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -228,7 +228,7 @@ fun RagScreen(
         item {
             Text("RAG workspace", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "Create local collections, keep source bytes content-addressed, and inspect deterministic lexical retrieval before embedding packs are installed.",
+                "Create local collections, keep source bytes content-addressed, and inspect hybrid lexical/vector retrieval with citations.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }

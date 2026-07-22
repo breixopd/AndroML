@@ -8,9 +8,9 @@ import org.junit.Test
 class RuntimePackCatalogTest {
     @Test
     fun productionCatalogueOnlyMarksShippedPacksAsUsable() {
-        assertEquals(listOf("litertlm"), RuntimePackCatalog.bundled.map { it.descriptor.id.value })
+        assertEquals(listOf("litertlm", "onnxruntime"), RuntimePackCatalog.bundled.map { it.descriptor.id.value })
         assertTrue(RuntimePackCatalog.find(RuntimeId.parse("litertlm"))!!.usable)
-        assertFalse(RuntimePackCatalog.find(RuntimeId.parse("onnxruntime"))!!.usable)
+        assertTrue(RuntimePackCatalog.find(RuntimeId.parse("onnxruntime"))!!.usable)
     }
 
     @Test

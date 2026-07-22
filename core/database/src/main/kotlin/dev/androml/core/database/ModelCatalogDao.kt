@@ -33,7 +33,7 @@ abstract class ModelCatalogDao {
 
     @Query(
         "SELECT DISTINCT modelId || '@' || revision FROM model_files " +
-            "WHERE artifactSha256 IS NOT NULL AND path LIKE '%.litertlm' " +
+            "WHERE artifactSha256 IS NOT NULL AND (path LIKE '%.litertlm' OR path LIKE '%.onnx' OR path LIKE '%.ort') " +
             "ORDER BY modelId ASC, revision ASC",
     )
     abstract suspend fun listRunnableModelKeys(): List<String>

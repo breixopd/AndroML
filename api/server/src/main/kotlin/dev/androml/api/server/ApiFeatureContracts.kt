@@ -20,6 +20,13 @@ data class ApiRagResult(
     val source: String,
     val text: String,
     val score: Double,
+    val lexicalScore: Double = 0.0,
+    val semanticScore: Double = 0.0,
+    val excerptHash: String? = null,
+    val startOffset: Int? = null,
+    val endOffset: Int? = null,
+    val page: Int? = null,
+    val section: String? = null,
 ) {
     init {
         require(nodeId.isNotBlank() && nodeId.length <= 128) { "RAG node ID is invalid" }
@@ -27,6 +34,14 @@ data class ApiRagResult(
         require(source.isNotBlank() && source.length <= 1_024) { "RAG source is invalid" }
         require(text.isNotBlank() && text.length <= 1 * 1024 * 1024) { "RAG text is invalid" }
         require(score.isFinite()) { "RAG score is invalid" }
+        require(lexicalScore.isFinite() && semanticScore.isFinite()) { "RAG component scores are invalid" }
+        require(excerptHash == null || excerptHash.matches(Regex("[a-f0-9]{64}"))) {
+            "RAG excerpt hash is invalid"
+        }
+        require(startOffset == null || startOffset >= 0) { "RAG start offset is invalid" }
+        require(endOffset == null || endOffset >= (startOffset ?: 0)) { "RAG end offset is invalid" }
+        require(page == null || page > 0) { "RAG page is invalid" }
+        require(section == null || section.length <= 256) { "RAG section is too long" }
     }
 }
 

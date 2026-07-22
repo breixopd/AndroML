@@ -6,7 +6,8 @@ import dev.androml.core.model.ModelWorkload
  * Product-facing inventory of engine packs. A pack is only advertised as usable when its
  * native implementation is actually shipped in the current APK. Keeping this catalogue
  * separate from adapter construction prevents the UI and API from promising an engine that
- * cannot execute a model on the device.
+ * cannot execute a model on the device. The ONNX pack currently exposes bounded text
+ * embeddings; other ONNX workloads remain explicit compatibility gaps.
  */
 enum class RuntimePackState {
     Bundled,
@@ -52,19 +53,19 @@ object RuntimePackCatalog {
             note = "Install a future signed runtime pack before use",
         ),
         RuntimePackInfo(
-            descriptor = unavailableDescriptor(
-                id = "onnxruntime",
-                version = "pending",
-                workloads = setOf(
-                    ModelWorkload.TextGeneration,
-                    ModelWorkload.TextEmbedding,
-                    ModelWorkload.ImageGeneration,
-                    ModelWorkload.SpeechToText,
-                ),
-                note = "Native pack is not included in this build",
+            descriptor = RuntimeDescriptor(
+                id = RuntimeId.parse("onnxruntime"),
+                version = "1.26.0",
+                supportedAbis = setOf("arm64-v8a", "x86_64"),
+                minAndroidApi = 29,
+                workloads = setOf(ModelWorkload.TextEmbedding),
+                acceleration = AccelerationBackend.Cpu,
+                requiresVulkan = false,
+                memoryOverheadBytes = 96L * 1024L * 1024L,
+                maxContextTokens = 4096,
             ),
-            state = RuntimePackState.NotBundled,
-            note = "Install a future signed runtime pack before use",
+            state = RuntimePackState.Bundled,
+            note = "CPU text embeddings; optional NNAPI compatibility backend",
         ),
         RuntimePackInfo(
             descriptor = unavailableDescriptor(

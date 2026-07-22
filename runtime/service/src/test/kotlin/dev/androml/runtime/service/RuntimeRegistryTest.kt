@@ -7,11 +7,10 @@ import org.junit.Test
 
 class RuntimeRegistryTest {
     @Test
-    fun onlyBundledRuntimeCanCreateAnAdapter() {
+    fun bundledRuntimePacksCreateAdapters() {
         val registry = RuntimeRegistry("/does/not/exist/model.litertlm")
         assertEquals("litertlm", registry.adapterFor(RuntimeId.parse("litertlm")).descriptor.id.value)
-        assertThrows(IllegalStateException::class.java) {
-            registry.adapterFor(RuntimeId.parse("onnxruntime"))
-        }
+        assertEquals("onnxruntime", registry.adapterFor(RuntimeId.parse("onnxruntime")).descriptor.id.value)
+        assertThrows(IllegalStateException::class.java) { registry.adapterFor(RuntimeId.parse("llamacpp")) }
     }
 }

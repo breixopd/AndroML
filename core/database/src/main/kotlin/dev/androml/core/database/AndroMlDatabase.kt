@@ -15,6 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RagDocumentEntity::class,
         RagChunkEntity::class,
         RagChunkSearchEntity::class,
+        RagVectorEntity::class,
         ApiKeyEntity::class,
         WorkflowEventEntity::class,
         WorkflowCheckpointEntity::class,
@@ -22,7 +23,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ClusterPeerEntity::class,
         RuntimeBenchmarkEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
@@ -242,6 +243,29 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9: Migration = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS rag_chunk_vectors (
+                        collectionId TEXT NOT NULL,
+                        documentId TEXT NOT NULL,
+                        chunkId TEXT NOT NULL,
+                        modelKey TEXT NOT NULL,
+                        dimension INTEGER NOT NULL,
+                        vector BLOB NOT NULL,
+                        updatedAtEpochMillis INTEGER NOT NULL,
+                        PRIMARY KEY(collectionId, documentId, chunkId, modelKey)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_rag_chunk_vectors_collectionId_modelKey " +
+                        "ON rag_chunk_vectors(collectionId, modelKey)",
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
@@ -254,6 +278,7 @@ abstract class AndroMlDatabase : RoomDatabase() {
             MIGRATION_5_6,
             MIGRATION_6_7,
             MIGRATION_7_8,
+            MIGRATION_8_9,
         ).build()
     }
 }

@@ -5,6 +5,7 @@ import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.api.RuntimePackCatalog
 import dev.androml.runtime.api.RuntimePackInfo
 import dev.androml.runtime.litertlm.LiteRtLmRuntimeAdapter
+import dev.androml.runtime.onnx.OnnxRuntimeAdapter
 
 /** Creates only adapters whose implementation is bundled in this APK. */
 class RuntimeRegistry(
@@ -18,6 +19,7 @@ class RuntimeRegistry(
         check(pack.usable) { "runtime is not installed" }
         return when (runtimeId.value) {
             "litertlm" -> LiteRtLmRuntimeAdapter(modelPath)
+            "onnxruntime" -> OnnxRuntimeAdapter(modelPath)
             else -> error("runtime adapter is not bundled")
         }
     }

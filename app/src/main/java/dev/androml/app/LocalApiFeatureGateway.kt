@@ -41,6 +41,13 @@ class LocalApiFeatureGateway(
                     source = result.result.chunk.sourceLabel,
                     text = result.result.chunk.text,
                     score = result.result.citation.fusedScore,
+                    lexicalScore = result.result.citation.lexicalScore,
+                    semanticScore = result.result.citation.semanticScore,
+                    excerptHash = result.result.citation.excerptHash,
+                    startOffset = result.result.citation.span.startOffset,
+                    endOffset = result.result.citation.span.endOffset,
+                    page = result.result.citation.span.page,
+                    section = result.result.citation.span.section,
                 )
             },
         )

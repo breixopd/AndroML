@@ -16,6 +16,7 @@ work = "2.11.2"
 ktor = "3.5.1"
 bouncy-castle = "1.84"
 litertlm = "0.14.0"
+onnxruntime = "1.26.0"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -55,3 +56,4 @@ ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref 
 bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncy-castle" }
 bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncy-castle" }
 litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version.ref = "litertlm" }
+onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }
