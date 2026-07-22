@@ -20,8 +20,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WorkflowCheckpointEntity::class,
         WorkflowDefinitionEntity::class,
         ClusterPeerEntity::class,
+        RuntimeBenchmarkEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
@@ -38,6 +39,8 @@ abstract class AndroMlDatabase : RoomDatabase() {
     abstract fun workflowDefinitionDao(): WorkflowDefinitionDao
 
     abstract fun clusterPeerDao(): ClusterPeerDao
+
+    abstract fun runtimeBenchmarkDao(): RuntimeBenchmarkDao
 
     companion object {
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
@@ -214,6 +217,31 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8: Migration = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS runtime_benchmarks (
+                        deviceKey TEXT NOT NULL,
+                        runtimeId TEXT NOT NULL,
+                        modelArtifactSha256 TEXT NOT NULL,
+                        profile TEXT NOT NULL,
+                        tokensPerSecond REAL NOT NULL,
+                        firstTokenLatencyMs REAL,
+                        outputValid INTEGER NOT NULL,
+                        failureCount INTEGER NOT NULL,
+                        measuredAtEpochMillis INTEGER NOT NULL,
+                        PRIMARY KEY(deviceKey, runtimeId, modelArtifactSha256, profile)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_runtime_benchmarks_deviceKey_modelArtifactSha256 " +
+                        "ON runtime_benchmarks(deviceKey, modelArtifactSha256)",
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
@@ -225,6 +253,7 @@ abstract class AndroMlDatabase : RoomDatabase() {
             MIGRATION_4_5,
             MIGRATION_5_6,
             MIGRATION_6_7,
+            MIGRATION_7_8,
         ).build()
     }
 }

@@ -81,6 +81,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -167,6 +168,7 @@ private fun AndroMLApp() {
                 deviceProfile = deviceProfile,
                 installedModelFiles = catalogFiles,
                 artifactStore = application.artifactStore,
+                benchmarkRepository = application.runtimeBenchmarkRepository,
             )
         } else if (selectedDestination == 2) {
             DiscoverScreen(
@@ -231,6 +233,7 @@ private fun PlaygroundScreen(
     deviceProfile: DeviceProfile,
     installedModelFiles: List<ModelFileEntity>,
     artifactStore: FileArtifactStore,
+    benchmarkRepository: dev.androml.core.database.RuntimeBenchmarkRepository,
 ) {
     var prompt by remember { mutableStateOf("Say hello from the isolated runtime.") }
     var output by remember { mutableStateOf("") }
@@ -269,6 +272,34 @@ private fun PlaygroundScreen(
             },
         )
     }
+    val benchmarkEntities by remember(deviceProfile.stableKey, selectedFile?.artifactSha256) {
+        selectedFile?.artifactSha256?.let { hash ->
+            benchmarkRepository.observe(deviceProfile.stableKey, hash)
+        } ?: flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+    val benchmarkObservations = remember(benchmarkEntities) {
+        benchmarkEntities.filter { it.outputValid }.mapNotNull { entity ->
+            runCatching {
+                dev.androml.optimizer.BenchmarkObservation(
+                    runtimeId = RuntimeId.parse(entity.runtimeId),
+                    tokensPerSecond = entity.tokensPerSecond,
+                    firstTokenLatencyMs = entity.firstTokenLatencyMs,
+                )
+            }.getOrNull()
+        }
+    }
+    val optimizedWithBenchmarks = remember(optimization, benchmarkObservations) {
+        if (benchmarkObservations.isEmpty()) {
+            optimization
+        } else {
+            optimizer.select(
+                device = deviceProfile,
+                model = model,
+                runtimes = RuntimePackCatalog.bundled.map { it.descriptor },
+                benchmarks = benchmarkObservations,
+            )
+        }
+    }
 
     LaunchedEffect(serviceClient) {
         status = try {
@@ -298,10 +329,10 @@ private fun PlaygroundScreen(
                 session = serviceClient.openSession(
                     model = model,
                     configuration = RuntimeConfiguration(
-                        cpuThreads = optimization.configuration?.cpuThreads
+                        cpuThreads = optimizedWithBenchmarks.configuration?.cpuThreads
                             ?: deviceProfile.cpuCoreCount.coerceIn(1, 8),
                         contextTokens = 2048,
-                        useAcceleration = optimization.configuration?.useAcceleration ?: false,
+                        useAcceleration = optimizedWithBenchmarks.configuration?.useAcceleration ?: false,
                     ),
                     runtimeId = RuntimeId.parse("litertlm"),
                     modelFile = selectedFile?.artifactSha256?.let { hash ->
@@ -311,7 +342,7 @@ private fun PlaygroundScreen(
                         )
                     },
                 )
-                status = "Auto-picked ${session.runtimeId.value} · ${optimization.configuration?.cpuThreads ?: 1} CPU threads in :inference"
+                status = "Auto-picked ${session.runtimeId.value} · ${optimizedWithBenchmarks.configuration?.cpuThreads ?: 1} CPU threads in :inference"
                 val request = InferenceRequest(
                     id = InferenceRequestId.parse("ui-${System.nanoTime()}"),
                     prompt = prompt,
@@ -322,8 +353,26 @@ private fun PlaygroundScreen(
                     when (event) {
                         is InferenceEvent.Started -> status = "Streaming from ${event.runtimeId.value} in :inference"
                         is InferenceEvent.Token -> output += event.text
-                        is InferenceEvent.Completed -> status =
-                            "Complete · ${event.generatedTokens} tokens · ${event.durationMs} ms"
+                        is InferenceEvent.Completed -> {
+                            status = "Complete · ${event.generatedTokens} tokens · ${event.durationMs} ms"
+                            val hash = selectedFile?.artifactSha256
+                            val seconds = event.durationMs.toDouble() / 1_000.0
+                            if (hash != null && seconds > 0.0) {
+                                scope.launch(Dispatchers.IO) {
+                                    runCatching {
+                                        benchmarkRepository.record(
+                                            deviceKey = deviceProfile.stableKey,
+                                            runtimeId = session?.runtimeId?.value ?: "litertlm",
+                                            modelArtifactSha256 = hash,
+                                            profile = "Balanced",
+                                            tokensPerSecond = event.generatedTokens / seconds,
+                                            firstTokenLatencyMs = event.durationMs,
+                                            outputValid = output.isNotBlank(),
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
                         is InferenceEvent.Failed -> status = "Runtime error: ${event.safeMessage}"
                         is InferenceEvent.Cancelled -> status = "Request canceled"
@@ -381,7 +430,7 @@ private fun PlaygroundScreen(
                     Text("$status\nNetwork access is absent from the runtime-service module.")
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        optimization.selected?.let { candidate ->
+                        optimizedWithBenchmarks.selected?.let { candidate ->
                             "Auto-pick: ${candidate.descriptor.id.value} · ${candidate.descriptor.acceleration.name.lowercase(Locale.ROOT)} · score ${"%.1f".format(Locale.ROOT, candidate.score ?: 0.0)}"
                         } ?: "Auto-pick: no compatible runtime can be proven on this device",
                         style = MaterialTheme.typography.bodySmall,
@@ -411,13 +460,13 @@ private fun PlaygroundScreen(
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = ::runPrompt,
-                        enabled = isRunning || optimization.selected != null,
+                        enabled = isRunning || optimizedWithBenchmarks.selected != null,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
                             when {
                                 isRunning -> "Stop"
-                                optimization.selected == null -> "No compatible runtime"
+                                optimizedWithBenchmarks.selected == null -> "No compatible runtime"
                                 else -> "Run with auto-optimisation"
                             },
                         )

@@ -14,6 +14,7 @@ import dev.androml.core.database.AndroMlDatabase
 import dev.androml.core.database.ClusterPeerRepository
 import dev.androml.core.database.ModelCatalogRepository
 import dev.androml.core.database.RagRepository
+import dev.androml.core.database.RuntimeBenchmarkRepository
 import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.ModelRequirements
@@ -72,6 +73,10 @@ class AndroMLApplication : Application() {
 
     val ragRepository: RagRepository by lazy {
         RagRepository(catalogDatabase.ragDao())
+    }
+
+    val runtimeBenchmarkRepository: RuntimeBenchmarkRepository by lazy {
+        RuntimeBenchmarkRepository(catalogDatabase.runtimeBenchmarkDao())
     }
 
     val apiKeyRepository: ApiKeyRepository by lazy {

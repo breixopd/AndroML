@@ -35,6 +35,13 @@ data class DeviceProfile(
     val thermalStatus: ThermalStatus,
     val hasVulkan: Boolean,
 ) {
+    val stableKey: String
+        get() = listOf(
+            manufacturer.trim().lowercase(),
+            model.trim().lowercase(),
+            androidApi.toString(),
+            supportedAbis.sorted().joinToString(","),
+        ).joinToString("|")
     val deviceName: String
         get() = listOf(manufacturer, model)
             .map(String::trim)
