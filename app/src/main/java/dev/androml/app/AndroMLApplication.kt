@@ -35,6 +35,7 @@ import dev.androml.runtime.api.InferenceRequest
 import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeId
+import dev.androml.runtime.api.RuntimePackCatalog
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
 import java.io.File
@@ -325,10 +326,15 @@ private class IsolatedRuntimeApiGateway(
 ) : ApiInferenceGateway {
     override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flow {
         val device = deviceProfileProvider()
-        val modelFile = catalogRepository.fileForModelKey(request.model)
-            ?: throw IllegalArgumentException("requested model is not installed")
-        require(modelFile.path.endsWith(".litertlm", ignoreCase = true)) {
-            "requested model does not have a LiteRT-LM artifact"
+        val modelFile = catalogRepository.filesForModelKey(request.model)
+            .firstOrNull { ModelFormatClassifier.supports(it.path, ModelWorkload.TextGeneration) }
+            ?: throw IllegalArgumentException("requested model has no supported text-generation artifact")
+        val runtimeId = RuntimeId.parse(
+            ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+                ?: throw IllegalArgumentException("requested model format is unsupported"),
+        )
+        check(RuntimePackCatalog.find(runtimeId)?.usable == true) {
+            "the runtime for ${modelFile.path.substringAfterLast('.').uppercase()} is not bundled in this build"
         }
         val artifactHash = modelFile.artifactSha256
             ?: throw IllegalArgumentException("requested model artifact is not verified")
@@ -350,7 +356,7 @@ private class IsolatedRuntimeApiGateway(
                     contextTokens = 2048,
                     useAcceleration = false,
                 ),
-                runtimeId = RuntimeId.parse("litertlm"),
+                runtimeId = runtimeId,
                 modelFile = descriptor,
             )
             val prompt = request.messages.joinToString("\n") { message ->
