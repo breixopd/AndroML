@@ -9,6 +9,7 @@ import dev.androml.core.agents.AgentId
 import dev.androml.core.agents.AgentMessage
 import dev.androml.core.agents.AgentModel
 import dev.androml.core.agents.AgentModelDecision
+import dev.androml.core.agents.AgentModelOutputParser
 import dev.androml.core.agents.AgentTranscript
 import dev.androml.core.database.WorkflowDefinitionRepository
 import dev.androml.core.database.WorkflowEventDao
@@ -382,7 +383,8 @@ class WorkflowController(
             val definition = AgentDefinition(
                 id = AgentId.parse(LOCAL_AGENT_KEY),
                 displayName = "Local AndroML agent",
-                systemPrompt = "Answer using the supplied context. Do not claim to have used unavailable tools.",
+                systemPrompt = agentSystemPrompt(),
+                allowedTools = tools.descriptors().map { it.id }.toSet(),
             )
                 val agent = AgentExecutor(
                     toolRegistry = tools,
@@ -397,10 +399,13 @@ class WorkflowController(
                             inputPayload = WorkflowValueCodec.encode(WorkflowValue.Text(transcriptText)),
                         ),
                     )
-                    AgentModelDecision.Final(
-                        (WorkflowValueCodec.decode(stage.result.outputPayload) as? WorkflowValue.Text)?.value
-                            ?: throw WorkflowNodeExecutionException("agent model returned a non-text value"),
-                    )
+                    val output = (WorkflowValueCodec.decode(stage.result.outputPayload) as? WorkflowValue.Text)?.value
+                        ?: throw WorkflowNodeExecutionException("agent model returned a non-text value")
+                    try {
+                        AgentModelOutputParser.parse(output)
+                    } catch (_: IllegalArgumentException) {
+                        throw WorkflowNodeExecutionException("agent model emitted an invalid tool call")
+                    }
                 },
             ).run(
                 definition = definition,
@@ -477,6 +482,15 @@ class WorkflowController(
     private fun allToolScopes(): Set<ToolScope> = tools.descriptors()
         .flatMap { it.requiredScopes }
         .toSet()
+
+    private fun agentSystemPrompt(): String = buildString {
+        append("Answer using the supplied context. Do not claim to have used unavailable tools. ")
+        append("You may request an allowlisted tool only by returning a single JSON object in this exact form: ")
+        append("{\"tool_call\":{\"id\":\"tool.id\",\"arguments\":{}}}. ")
+        append("Available tools: ")
+        append(tools.descriptors().joinToString(", ") { it.id.value })
+        append('.')
+    }
 
     private data class ApprovalKey(
         val runId: RunId,
