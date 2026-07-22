@@ -48,7 +48,7 @@ jobs:
 
       - name: Install Android SDK packages
         if: steps.release.outputs.release_created == 'true'
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0"
 
       - name: Require test-release signing inputs
         if: steps.release.outputs.release_created == 'true'

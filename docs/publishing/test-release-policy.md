@@ -1,4 +1,4 @@
-# Private Phone-Test Release Policy
+# Public Repository, Owner-Controlled Phone-Test Release Policy
 
 This policy is active until the owner explicitly approves store publication.
 
@@ -23,6 +23,7 @@ The following remain disabled during the test period:
 - Accrescent.
 - IzzyOnDroid.
 - Any other app store, repository, mirror, or third-party upload service.
+- Obtainium metadata or any other third-party update feed.
 
 The app’s `ReleasePolicy.testPeriod()` permits only `ReleaseChannel.GitHubRelease`. The GitHub workflow also checks `STORE_SUBMISSIONS_ENABLED=false`; changing that value requires a reviewed code change and explicit owner approval after phone testing.
 

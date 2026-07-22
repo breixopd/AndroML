@@ -4,13 +4,16 @@ AndroML is a power-user Android app for downloading, optimizing, and running mac
 
 ## Current status
 
-This repository is in the private phone-test period. The current build is a runnable foundation slice:
+This repository is public and in the owner-controlled phone-test period. The current build is a usable v1 test candidate:
 
 - Android 17 / API 37 target.
 - OSS and Play build flavors exist, but only the OSS flavor is distributed during testing.
-- The Home screen shows device/model/runtime readiness placeholders and the active release gate.
+- The Home, Settings, Discover, Library, Playground, RAG, Workflows, API, and Cluster screens expose the complete local control surface.
+- Hugging Face search and pinned-commit imports use bounded, resumable, SHA-256 verified downloads. Local RAG accepts text, HTML, PDF, EPUB, DOCX, XLSX, and PPTX sources with citations.
+- LiteRT-LM is the bundled text-generation runtime. Other planned engine packs are shown as unavailable until their signed native implementations are shipped; the app never substitutes a fake model result in production.
+- The API includes scoped bearer authentication, loopback/LAN mTLS gates, OpenAI chat/responses/embeddings routes, RAG, tools, workflows, agents, cluster status, and an OpenAPI document.
 - Only GitHub Releases are allowed by the product policy.
-- Google Play, F-Droid, Accrescent, IzzyOnDroid, and every other store/repository submission is disabled until the owner explicitly approves it.
+- Google Play, F-Droid, Accrescent, IzzyOnDroid, Obtainium manifests, and every other store/repository submission is disabled until the owner explicitly approves it.
 
 The implementation plan is intentionally local and ignored by Git: `docs/superpowers/plans/2026-07-18-androml-v1-implementation-plan.md`.
 
