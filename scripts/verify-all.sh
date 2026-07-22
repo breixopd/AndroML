@@ -27,7 +27,10 @@ gradle_args=(
     :cluster:core:testDebugUnitTest
     :cluster:transport:testDebugUnitTest
     :runtime:api:testDebugUnitTest
+    :runtime:litert:testDebugUnitTest
     :runtime:litertlm:testDebugUnitTest
+    :runtime:onnx:testDebugUnitTest
+    :runtime:executorch:testDebugUnitTest
     :runtime:service:testDebugUnitTest
     :optimizer:testDebugUnitTest
     :app:testOssDebugUnitTest
@@ -46,7 +49,10 @@ gradle_args=(
     :cluster:core:lintDebug
     :cluster:transport:lintDebug
     :runtime:api:lintDebug
+    :runtime:litert:lintDebug
     :runtime:litertlm:lintDebug
+    :runtime:onnx:lintDebug
+    :runtime:executorch:lintDebug
     :runtime:service:lintDebug
     :optimizer:lintDebug
     :app:lintOssDebug
