@@ -207,6 +207,7 @@ private fun AndroMLApp() {
                 modifier = Modifier.padding(paddingValues),
                 controller = apiController,
                 keyRepository = apiKeyRepository,
+                auditDao = application.catalogDatabase.toolAuditDao(),
                 tlsIdentityStore = application.apiTlsIdentityStore,
                 clientCertificateStore = application.apiClientCertificateStore,
             )
