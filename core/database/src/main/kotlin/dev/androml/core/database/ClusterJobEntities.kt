@@ -12,5 +12,6 @@ data class ClusterJobAttemptEntity(
     val state: String,
     val outputHash: String?,
     val output: ByteArray?,
+    val leaseExpiresAtEpochMillis: Long,
     val updatedAtEpochMillis: Long,
 )

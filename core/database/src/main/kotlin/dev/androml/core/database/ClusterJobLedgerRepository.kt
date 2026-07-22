@@ -39,12 +39,43 @@ class ClusterJobLedgerRepository(
                     state = JobState.Running.name,
                     outputHash = null,
                     output = null,
+                    leaseExpiresAtEpochMillis = Long.MAX_VALUE,
                     updatedAtEpochMillis = System.currentTimeMillis(),
                 ),
             )
             BeginAttempt.Started
         }
         else -> when (existing.state) {
+            JobState.Running.name -> BeginAttempt.AlreadyRunning
+            JobState.Completed.name -> BeginAttempt.Completed
+            JobState.Failed.name -> BeginAttempt.Failed
+            else -> error("unknown persisted cluster job state")
+        }
+    }
+
+    @Synchronized
+    override fun begin(key: JobAttemptKey, nowEpochMillis: Long, leaseMillis: Long): BeginAttempt {
+        require(leaseMillis in 1_000L..24 * 60 * 60 * 1_000L) { "cluster lease is out of bounds" }
+        val existing = dao.find(key.jobId.value, key.attempt)
+        if (existing == null) {
+            dao.insert(
+                ClusterJobAttemptEntity(
+                    jobId = key.jobId.value,
+                    attempt = key.attempt,
+                    state = JobState.Running.name,
+                    outputHash = null,
+                    output = null,
+                    leaseExpiresAtEpochMillis = nowEpochMillis + leaseMillis,
+                    updatedAtEpochMillis = nowEpochMillis,
+                ),
+            )
+            return BeginAttempt.Started
+        }
+        if (existing.state == JobState.Running.name && existing.leaseExpiresAtEpochMillis <= nowEpochMillis) {
+            dao.replace(existing.copy(leaseExpiresAtEpochMillis = nowEpochMillis + leaseMillis, updatedAtEpochMillis = nowEpochMillis))
+            return BeginAttempt.Started
+        }
+        return when (existing.state) {
             JobState.Running.name -> BeginAttempt.AlreadyRunning
             JobState.Completed.name -> BeginAttempt.Completed
             JobState.Failed.name -> BeginAttempt.Failed
@@ -61,6 +92,7 @@ class ClusterJobLedgerRepository(
             state = JobState.Completed.name,
             outputHash = outputHash.value,
             output = output?.copyOf(),
+            leaseExpiresAtEpochMillis = existing.leaseExpiresAtEpochMillis,
             updatedAtEpochMillis = System.currentTimeMillis(),
         ))
     }

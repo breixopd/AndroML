@@ -1,0 +1,997 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 11,
+    "identityHash": "fe618144f5ea9701724835cb23e570be",
+    "entities": [
+      {
+        "tableName": "model_records",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`modelId` TEXT NOT NULL, `revision` TEXT NOT NULL, `isPrivate` INTEGER NOT NULL, `isGated` INTEGER NOT NULL, `license` TEXT, `observedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`modelId`, `revision`))",
+        "fields": [
+          {
+            "fieldPath": "modelId",
+            "columnName": "modelId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPrivate",
+            "columnName": "isPrivate",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isGated",
+            "columnName": "isGated",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "license",
+            "columnName": "license",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "observedAtEpochMillis",
+            "columnName": "observedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "modelId",
+            "revision"
+          ]
+        }
+      },
+      {
+        "tableName": "model_files",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`modelId` TEXT NOT NULL, `revision` TEXT NOT NULL, `path` TEXT NOT NULL, `sizeBytes` INTEGER NOT NULL, `sha256` TEXT, `artifactSha256` TEXT, `downloadedAtEpochMillis` INTEGER, PRIMARY KEY(`modelId`, `revision`, `path`), FOREIGN KEY(`modelId`, `revision`) REFERENCES `model_records`(`modelId`, `revision`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "modelId",
+            "columnName": "modelId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "path",
+            "columnName": "path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "artifactSha256",
+            "columnName": "artifactSha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "downloadedAtEpochMillis",
+            "columnName": "downloadedAtEpochMillis",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "modelId",
+            "revision",
+            "path"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_model_files_modelId_revision",
+            "unique": false,
+            "columnNames": [
+              "modelId",
+              "revision"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_model_files_modelId_revision` ON `${TABLE_NAME}` (`modelId`, `revision`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "model_records",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "modelId",
+              "revision"
+            ],
+            "referencedColumns": [
+              "modelId",
+              "revision"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "rag_collections",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`collectionId` TEXT NOT NULL, `displayName` TEXT NOT NULL, `embeddingModelKey` TEXT, `createdAtEpochMillis` INTEGER NOT NULL, `updatedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`collectionId`))",
+        "fields": [
+          {
+            "fieldPath": "collectionId",
+            "columnName": "collectionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "embeddingModelKey",
+            "columnName": "embeddingModelKey",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAtEpochMillis",
+            "columnName": "createdAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMillis",
+            "columnName": "updatedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "collectionId"
+          ]
+        }
+      },
+      {
+        "tableName": "rag_documents",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`collectionId` TEXT NOT NULL, `documentId` TEXT NOT NULL, `title` TEXT NOT NULL, `sourceLabel` TEXT NOT NULL, `contentSha256` TEXT NOT NULL, `contentArtifactSha256` TEXT NOT NULL, `byteSize` INTEGER NOT NULL, `status` TEXT NOT NULL, `updatedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`collectionId`, `documentId`))",
+        "fields": [
+          {
+            "fieldPath": "collectionId",
+            "columnName": "collectionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "documentId",
+            "columnName": "documentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceLabel",
+            "columnName": "sourceLabel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentSha256",
+            "columnName": "contentSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentArtifactSha256",
+            "columnName": "contentArtifactSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "byteSize",
+            "columnName": "byteSize",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMillis",
+            "columnName": "updatedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "collectionId",
+            "documentId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_rag_documents_collectionId_updatedAtEpochMillis",
+            "unique": false,
+            "columnNames": [
+              "collectionId",
+              "updatedAtEpochMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_rag_documents_collectionId_updatedAtEpochMillis` ON `${TABLE_NAME}` (`collectionId`, `updatedAtEpochMillis`)"
+          }
+        ]
+      },
+      {
+        "tableName": "rag_chunks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`collectionId` TEXT NOT NULL, `documentId` TEXT NOT NULL, `chunkId` TEXT NOT NULL, `title` TEXT NOT NULL, `sourceLabel` TEXT NOT NULL, `text` TEXT NOT NULL, `startOffset` INTEGER NOT NULL, `endOffset` INTEGER NOT NULL, `page` INTEGER, `section` TEXT, `ordinal` INTEGER NOT NULL, PRIMARY KEY(`collectionId`, `documentId`, `chunkId`))",
+        "fields": [
+          {
+            "fieldPath": "collectionId",
+            "columnName": "collectionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "documentId",
+            "columnName": "documentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chunkId",
+            "columnName": "chunkId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceLabel",
+            "columnName": "sourceLabel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "text",
+            "columnName": "text",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startOffset",
+            "columnName": "startOffset",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endOffset",
+            "columnName": "endOffset",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "page",
+            "columnName": "page",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "section",
+            "columnName": "section",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "ordinal",
+            "columnName": "ordinal",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "collectionId",
+            "documentId",
+            "chunkId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_rag_chunks_collectionId_documentId",
+            "unique": false,
+            "columnNames": [
+              "collectionId",
+              "documentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_rag_chunks_collectionId_documentId` ON `${TABLE_NAME}` (`collectionId`, `documentId`)"
+          },
+          {
+            "name": "index_rag_chunks_collectionId_ordinal",
+            "unique": false,
+            "columnNames": [
+              "collectionId",
+              "ordinal"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_rag_chunks_collectionId_ordinal` ON `${TABLE_NAME}` (`collectionId`, `ordinal`)"
+          }
+        ]
+      },
+      {
+        "tableName": "rag_chunk_search",
+        "createSql": "CREATE VIRTUAL TABLE IF NOT EXISTS `${TABLE_NAME}` USING FTS4(`collectionId` TEXT NOT NULL, `documentId` TEXT NOT NULL, `chunkId` TEXT NOT NULL, `title` TEXT NOT NULL, `sourceLabel` TEXT NOT NULL, `text` TEXT NOT NULL, `startOffset` INTEGER NOT NULL, `endOffset` INTEGER NOT NULL, `page` INTEGER, `section` TEXT, `ordinal` INTEGER NOT NULL, tokenize=unicode61, notindexed=`collectionId`, notindexed=`documentId`, notindexed=`chunkId`, notindexed=`title`, notindexed=`sourceLabel`, notindexed=`startOffset`, notindexed=`endOffset`, notindexed=`page`, notindexed=`section`, notindexed=`ordinal`)",
+        "fields": [
+          {
+            "fieldPath": "collectionId",
+            "columnName": "collectionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "documentId",
+            "columnName": "documentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chunkId",
+            "columnName": "chunkId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceLabel",
+            "columnName": "sourceLabel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "text",
+            "columnName": "text",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startOffset",
+            "columnName": "startOffset",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endOffset",
+            "columnName": "endOffset",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "page",
+            "columnName": "page",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "section",
+            "columnName": "section",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "ordinal",
+            "columnName": "ordinal",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": []
+        },
+        "ftsVersion": "FTS4",
+        "ftsOptions": {
+          "tokenizer": "unicode61",
+          "tokenizerArgs": [],
+          "contentTable": "",
+          "languageIdColumnName": "",
+          "matchInfo": "FTS4",
+          "notIndexedColumns": [
+            "collectionId",
+            "documentId",
+            "chunkId",
+            "title",
+            "sourceLabel",
+            "startOffset",
+            "endOffset",
+            "page",
+            "section",
+            "ordinal"
+          ],
+          "prefixSizes": [],
+          "preferredOrder": "ASC"
+        },
+        "contentSyncTriggers": []
+      },
+      {
+        "tableName": "rag_chunk_vectors",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`collectionId` TEXT NOT NULL, `documentId` TEXT NOT NULL, `chunkId` TEXT NOT NULL, `modelKey` TEXT NOT NULL, `dimension` INTEGER NOT NULL, `vector` BLOB NOT NULL, `updatedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`collectionId`, `documentId`, `chunkId`, `modelKey`))",
+        "fields": [
+          {
+            "fieldPath": "collectionId",
+            "columnName": "collectionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "documentId",
+            "columnName": "documentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chunkId",
+            "columnName": "chunkId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelKey",
+            "columnName": "modelKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dimension",
+            "columnName": "dimension",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "vector",
+            "columnName": "vector",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMillis",
+            "columnName": "updatedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "collectionId",
+            "documentId",
+            "chunkId",
+            "modelKey"
+          ]
+        }
+      },
+      {
+        "tableName": "api_keys",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `displayName` TEXT NOT NULL, `tokenHash` TEXT NOT NULL, `scopes` TEXT NOT NULL, `createdAtEpochMillis` INTEGER NOT NULL, `expiresAtEpochMillis` INTEGER, `revokedAtEpochMillis` INTEGER, `lastUsedAtEpochMillis` INTEGER, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tokenHash",
+            "columnName": "tokenHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scopes",
+            "columnName": "scopes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMillis",
+            "columnName": "createdAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiresAtEpochMillis",
+            "columnName": "expiresAtEpochMillis",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "revokedAtEpochMillis",
+            "columnName": "revokedAtEpochMillis",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastUsedAtEpochMillis",
+            "columnName": "lastUsedAtEpochMillis",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "workflow_events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`runId` TEXT NOT NULL, `sequence` INTEGER NOT NULL, `idempotencyKey` TEXT NOT NULL, `eventType` TEXT NOT NULL, `payload` TEXT NOT NULL, `appendedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`runId`, `sequence`))",
+        "fields": [
+          {
+            "fieldPath": "runId",
+            "columnName": "runId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sequence",
+            "columnName": "sequence",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "idempotencyKey",
+            "columnName": "idempotencyKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventType",
+            "columnName": "eventType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payload",
+            "columnName": "payload",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appendedAtEpochMillis",
+            "columnName": "appendedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "runId",
+            "sequence"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_workflow_events_runId_idempotencyKey",
+            "unique": true,
+            "columnNames": [
+              "runId",
+              "idempotencyKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_workflow_events_runId_idempotencyKey` ON `${TABLE_NAME}` (`runId`, `idempotencyKey`)"
+          }
+        ]
+      },
+      {
+        "tableName": "workflow_checkpoints",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`runId` TEXT NOT NULL, `nodeId` TEXT NOT NULL, `attempt` INTEGER NOT NULL, `outputHash` TEXT NOT NULL, `valuePayload` TEXT NOT NULL, `updatedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`runId`, `nodeId`, `attempt`))",
+        "fields": [
+          {
+            "fieldPath": "runId",
+            "columnName": "runId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nodeId",
+            "columnName": "nodeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attempt",
+            "columnName": "attempt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outputHash",
+            "columnName": "outputHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "valuePayload",
+            "columnName": "valuePayload",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMillis",
+            "columnName": "updatedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "runId",
+            "nodeId",
+            "attempt"
+          ]
+        }
+      },
+      {
+        "tableName": "workflow_definitions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`workflowId` TEXT NOT NULL, `version` INTEGER NOT NULL, `payload` TEXT NOT NULL, `createdAtEpochMillis` INTEGER NOT NULL, `updatedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`workflowId`, `version`))",
+        "fields": [
+          {
+            "fieldPath": "workflowId",
+            "columnName": "workflowId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "version",
+            "columnName": "version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payload",
+            "columnName": "payload",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMillis",
+            "columnName": "createdAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMillis",
+            "columnName": "updatedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "workflowId",
+            "version"
+          ]
+        }
+      },
+      {
+        "tableName": "cluster_peers",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`peerId` TEXT NOT NULL, `fingerprint` TEXT NOT NULL, `displayName` TEXT NOT NULL, `host` TEXT NOT NULL, `port` INTEGER NOT NULL, `pairedAtEpochMillis` INTEGER NOT NULL, `certificateExpiresAtEpochMillis` INTEGER NOT NULL, `paired` INTEGER NOT NULL, `revoked` INTEGER NOT NULL, `certificateDer` BLOB NOT NULL, `protocolMajor` INTEGER NOT NULL, `protocolMinor` INTEGER NOT NULL, `supportedWorkloads` TEXT NOT NULL, `modelHashes` TEXT NOT NULL, `maxConcurrentJobs` INTEGER NOT NULL, `availableRamBytes` INTEGER NOT NULL, `queueDepth` INTEGER NOT NULL, `thermalSeverity` INTEGER NOT NULL, `batteryPercent` INTEGER NOT NULL, `charging` INTEGER NOT NULL, `lastSeenEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`peerId`))",
+        "fields": [
+          {
+            "fieldPath": "peerId",
+            "columnName": "peerId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fingerprint",
+            "columnName": "fingerprint",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "host",
+            "columnName": "host",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "port",
+            "columnName": "port",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pairedAtEpochMillis",
+            "columnName": "pairedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "certificateExpiresAtEpochMillis",
+            "columnName": "certificateExpiresAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paired",
+            "columnName": "paired",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revoked",
+            "columnName": "revoked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "certificateDer",
+            "columnName": "certificateDer",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protocolMajor",
+            "columnName": "protocolMajor",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protocolMinor",
+            "columnName": "protocolMinor",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "supportedWorkloads",
+            "columnName": "supportedWorkloads",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelHashes",
+            "columnName": "modelHashes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxConcurrentJobs",
+            "columnName": "maxConcurrentJobs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "availableRamBytes",
+            "columnName": "availableRamBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "queueDepth",
+            "columnName": "queueDepth",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "thermalSeverity",
+            "columnName": "thermalSeverity",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "batteryPercent",
+            "columnName": "batteryPercent",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "charging",
+            "columnName": "charging",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSeenEpochMillis",
+            "columnName": "lastSeenEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "peerId"
+          ]
+        }
+      },
+      {
+        "tableName": "cluster_job_attempts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`jobId` TEXT NOT NULL, `attempt` INTEGER NOT NULL, `state` TEXT NOT NULL, `outputHash` TEXT, `output` BLOB, `leaseExpiresAtEpochMillis` INTEGER NOT NULL, `updatedAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`jobId`, `attempt`))",
+        "fields": [
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attempt",
+            "columnName": "attempt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outputHash",
+            "columnName": "outputHash",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "output",
+            "columnName": "output",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "leaseExpiresAtEpochMillis",
+            "columnName": "leaseExpiresAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMillis",
+            "columnName": "updatedAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "jobId",
+            "attempt"
+          ]
+        }
+      },
+      {
+        "tableName": "runtime_benchmarks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`deviceKey` TEXT NOT NULL, `runtimeId` TEXT NOT NULL, `modelArtifactSha256` TEXT NOT NULL, `profile` TEXT NOT NULL, `tokensPerSecond` REAL NOT NULL, `firstTokenLatencyMs` REAL, `outputValid` INTEGER NOT NULL, `failureCount` INTEGER NOT NULL, `measuredAtEpochMillis` INTEGER NOT NULL, PRIMARY KEY(`deviceKey`, `runtimeId`, `modelArtifactSha256`, `profile`))",
+        "fields": [
+          {
+            "fieldPath": "deviceKey",
+            "columnName": "deviceKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "runtimeId",
+            "columnName": "runtimeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelArtifactSha256",
+            "columnName": "modelArtifactSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "profile",
+            "columnName": "profile",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tokensPerSecond",
+            "columnName": "tokensPerSecond",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstTokenLatencyMs",
+            "columnName": "firstTokenLatencyMs",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "outputValid",
+            "columnName": "outputValid",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "failureCount",
+            "columnName": "failureCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "measuredAtEpochMillis",
+            "columnName": "measuredAtEpochMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "deviceKey",
+            "runtimeId",
+            "modelArtifactSha256",
+            "profile"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_runtime_benchmarks_deviceKey_modelArtifactSha256",
+            "unique": false,
+            "columnNames": [
+              "deviceKey",
+              "modelArtifactSha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_runtime_benchmarks_deviceKey_modelArtifactSha256` ON `${TABLE_NAME}` (`deviceKey`, `modelArtifactSha256`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'fe618144f5ea9701724835cb23e570be')"
+    ]
+  }
+}

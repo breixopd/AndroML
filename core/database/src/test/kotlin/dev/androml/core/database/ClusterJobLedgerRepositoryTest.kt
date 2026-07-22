@@ -30,6 +30,16 @@ class ClusterJobLedgerRepositoryTest {
         assertArrayEquals(output, recreated.output(key))
     }
 
+    @Test
+    fun expiredRunningLeaseCanBeRecovered() {
+        val dao = FakeDao()
+        val ledger = ClusterJobLedgerRepository(dao)
+        val key = JobAttemptKey(ClusterJobId.parse("job-recover"), 1)
+        assertEquals(BeginAttempt.Started, ledger.begin(key, nowEpochMillis = 1_000L, leaseMillis = 1_000L))
+        assertEquals(BeginAttempt.AlreadyRunning, ledger.begin(key, nowEpochMillis = 1_500L, leaseMillis = 1_000L))
+        assertEquals(BeginAttempt.Started, ledger.begin(key, nowEpochMillis = 2_001L, leaseMillis = 1_000L))
+    }
+
     private class FakeDao : ClusterJobAttemptDao {
         private val rows = mutableMapOf<Pair<String, Int>, ClusterJobAttemptEntity>()
 

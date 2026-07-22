@@ -24,7 +24,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ClusterJobAttemptEntity::class,
         RuntimeBenchmarkEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
@@ -287,6 +287,14 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_10_11: Migration = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE cluster_job_attempts ADD COLUMN leaseExpiresAtEpochMillis INTEGER NOT NULL DEFAULT 0",
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
@@ -301,6 +309,7 @@ abstract class AndroMlDatabase : RoomDatabase() {
             MIGRATION_7_8,
             MIGRATION_8_9,
             MIGRATION_9_10,
+            MIGRATION_10_11,
         ).build()
     }
 }

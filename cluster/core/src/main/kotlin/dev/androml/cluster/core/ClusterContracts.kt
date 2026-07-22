@@ -248,6 +248,9 @@ enum class BeginAttempt {
 interface ClusterJobLedger {
     fun begin(key: JobAttemptKey): BeginAttempt
 
+    /** Starts or recovers an attempt whose worker lease has expired. */
+    fun begin(key: JobAttemptKey, nowEpochMillis: Long, leaseMillis: Long): BeginAttempt = begin(key)
+
     fun complete(key: JobAttemptKey, outputHash: ContentHash, output: ByteArray? = null)
 
     fun fail(key: JobAttemptKey)
@@ -265,6 +268,7 @@ class InMemoryClusterJobLedger : ClusterJobLedger {
         var state: JobState,
         var outputHash: ContentHash?,
         var output: ByteArray?,
+        var leaseExpiresAtEpochMillis: Long,
     )
 
     private val records = mutableMapOf<JobAttemptKey, Record>()
@@ -272,13 +276,32 @@ class InMemoryClusterJobLedger : ClusterJobLedger {
     @Synchronized
     override fun begin(key: JobAttemptKey): BeginAttempt = when (records[key]?.state) {
         null -> {
-            records[key] = Record(JobState.Running, outputHash = null, output = null)
+            records[key] = Record(JobState.Running, outputHash = null, output = null, leaseExpiresAtEpochMillis = Long.MAX_VALUE)
             BeginAttempt.Started
         }
 
         JobState.Running -> BeginAttempt.AlreadyRunning
         JobState.Completed -> BeginAttempt.Completed
         JobState.Failed -> BeginAttempt.Failed
+    }
+
+    @Synchronized
+    override fun begin(key: JobAttemptKey, nowEpochMillis: Long, leaseMillis: Long): BeginAttempt {
+        require(leaseMillis in 1_000L..24 * 60 * 60 * 1_000L) { "cluster lease is out of bounds" }
+        val existing = records[key]
+        if (existing?.state == JobState.Running && existing.leaseExpiresAtEpochMillis <= nowEpochMillis) {
+            existing.leaseExpiresAtEpochMillis = nowEpochMillis + leaseMillis
+            return BeginAttempt.Started
+        }
+        if (existing == null) {
+            records[key] = Record(JobState.Running, outputHash = null, output = null, leaseExpiresAtEpochMillis = nowEpochMillis + leaseMillis)
+            return BeginAttempt.Started
+        }
+        return when (existing.state) {
+            JobState.Running -> BeginAttempt.AlreadyRunning
+            JobState.Completed -> BeginAttempt.Completed
+            JobState.Failed -> BeginAttempt.Failed
+        }
     }
 
     @Synchronized

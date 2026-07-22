@@ -101,7 +101,7 @@ class IdempotentClusterExecutor(
         }
 
         val key = JobAttemptKey(request.request.jobId, request.request.attempt)
-        return when (ledger.begin(key)) {
+        return when (ledger.begin(key, nowEpochMillis(), LEASE_MILLIS)) {
             BeginAttempt.Started -> runStarted(key, request)
             BeginAttempt.AlreadyRunning -> response(request, ClusterExecutionStatus.AlreadyRunning)
             BeginAttempt.Completed -> response(
@@ -162,6 +162,10 @@ class IdempotentClusterExecutor(
         outputHash = outputHash,
         safeMessage = safeMessage,
     )
+
+    private companion object {
+        const val LEASE_MILLIS = 2 * 60 * 1_000L
+    }
 }
 
 /** Versioned JSON codec for peer messages. The payload itself remains opaque to transport. */
