@@ -244,7 +244,23 @@ enum class BeginAttempt {
     Failed,
 }
 
-class InMemoryClusterJobLedger {
+/** Durable/idempotent storage contract for one cluster job attempt. */
+interface ClusterJobLedger {
+    fun begin(key: JobAttemptKey): BeginAttempt
+
+    fun complete(key: JobAttemptKey, outputHash: ContentHash, output: ByteArray? = null)
+
+    fun fail(key: JobAttemptKey)
+
+    fun state(key: JobAttemptKey): JobState?
+
+    fun outputHash(key: JobAttemptKey): ContentHash?
+
+    fun output(key: JobAttemptKey): ByteArray?
+}
+
+/** In-process ledger used by transport tests and as a safe fallback. */
+class InMemoryClusterJobLedger : ClusterJobLedger {
     private data class Record(
         var state: JobState,
         var outputHash: ContentHash?,
@@ -254,7 +270,7 @@ class InMemoryClusterJobLedger {
     private val records = mutableMapOf<JobAttemptKey, Record>()
 
     @Synchronized
-    fun begin(key: JobAttemptKey): BeginAttempt = when (records[key]?.state) {
+    override fun begin(key: JobAttemptKey): BeginAttempt = when (records[key]?.state) {
         null -> {
             records[key] = Record(JobState.Running, outputHash = null, output = null)
             BeginAttempt.Started
@@ -266,7 +282,7 @@ class InMemoryClusterJobLedger {
     }
 
     @Synchronized
-    fun complete(key: JobAttemptKey, outputHash: ContentHash, output: ByteArray? = null) {
+    override fun complete(key: JobAttemptKey, outputHash: ContentHash, output: ByteArray?) {
         val record = records[key] ?: error("job attempt was not started")
         check(record.state == JobState.Running) { "job attempt is not running" }
         record.state = JobState.Completed
@@ -275,20 +291,20 @@ class InMemoryClusterJobLedger {
     }
 
     @Synchronized
-    fun fail(key: JobAttemptKey) {
+    override fun fail(key: JobAttemptKey) {
         val record = records[key] ?: error("job attempt was not started")
         check(record.state == JobState.Running) { "job attempt is not running" }
         record.state = JobState.Failed
     }
 
     @Synchronized
-    fun state(key: JobAttemptKey): JobState? = records[key]?.state
+    override fun state(key: JobAttemptKey): JobState? = records[key]?.state
 
     @Synchronized
-    fun outputHash(key: JobAttemptKey): ContentHash? = records[key]?.outputHash
+    override fun outputHash(key: JobAttemptKey): ContentHash? = records[key]?.outputHash
 
     @Synchronized
-    fun output(key: JobAttemptKey): ByteArray? = records[key]?.output?.copyOf()
+    override fun output(key: JobAttemptKey): ByteArray? = records[key]?.output?.copyOf()
 }
 
 data class NodeRetrievalResult(

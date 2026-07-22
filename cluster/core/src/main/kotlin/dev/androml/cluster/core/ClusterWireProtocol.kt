@@ -91,7 +91,7 @@ fun interface ClusterExecutionHandler {
 
 /** Runs one attempt at most once and exposes only bounded, hash-addressed results. */
 class IdempotentClusterExecutor(
-    private val ledger: InMemoryClusterJobLedger,
+    private val ledger: ClusterJobLedger,
     private val handler: ClusterExecutionHandler,
     private val nowEpochMillis: () -> Long,
 ) {

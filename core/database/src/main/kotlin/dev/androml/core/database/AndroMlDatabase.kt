@@ -21,9 +21,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WorkflowCheckpointEntity::class,
         WorkflowDefinitionEntity::class,
         ClusterPeerEntity::class,
+        ClusterJobAttemptEntity::class,
         RuntimeBenchmarkEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
@@ -40,6 +41,8 @@ abstract class AndroMlDatabase : RoomDatabase() {
     abstract fun workflowDefinitionDao(): WorkflowDefinitionDao
 
     abstract fun clusterPeerDao(): ClusterPeerDao
+
+    abstract fun clusterJobAttemptDao(): ClusterJobAttemptDao
 
     abstract fun runtimeBenchmarkDao(): RuntimeBenchmarkDao
 
@@ -266,6 +269,24 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10: Migration = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS cluster_job_attempts (
+                        jobId TEXT NOT NULL,
+                        attempt INTEGER NOT NULL,
+                        state TEXT NOT NULL,
+                        outputHash TEXT,
+                        output BLOB,
+                        updatedAtEpochMillis INTEGER NOT NULL,
+                        PRIMARY KEY(jobId, attempt)
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
@@ -279,6 +300,7 @@ abstract class AndroMlDatabase : RoomDatabase() {
             MIGRATION_6_7,
             MIGRATION_7_8,
             MIGRATION_8_9,
+            MIGRATION_9_10,
         ).build()
     }
 }

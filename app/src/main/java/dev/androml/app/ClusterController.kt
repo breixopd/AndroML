@@ -22,7 +22,7 @@ import dev.androml.cluster.core.ClusterWorkload
 import dev.androml.cluster.core.ContentHash
 import dev.androml.cluster.core.DistributedRagMerger
 import dev.androml.cluster.core.IdempotentClusterExecutor
-import dev.androml.cluster.core.InMemoryClusterJobLedger
+import dev.androml.cluster.core.ClusterJobLedger
 import dev.androml.cluster.core.NoEligibleClusterNode
 import dev.androml.cluster.core.NodeRetrievalResult
 import dev.androml.cluster.core.NodeCapabilities
@@ -101,9 +101,9 @@ class ClusterController(
     private val artifactStore: FileArtifactStore,
     private val ragRepository: RagRepository,
     private val deviceProfileProvider: () -> DeviceProfile,
+    private val ledger: ClusterJobLedger,
 ) {
     private val _state = MutableStateFlow<ClusterControllerState>(ClusterControllerState.Disabled)
-    private val ledger = InMemoryClusterJobLedger()
     private val pairingInvites = ClusterPairingInviteIssuer()
     private var server: ClusterExecutionServer? = null
     @Volatile

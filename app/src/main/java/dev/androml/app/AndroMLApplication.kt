@@ -12,6 +12,7 @@ import dev.androml.core.api.BindMode
 import dev.androml.core.database.ApiKeyRepository
 import dev.androml.core.database.AndroMlDatabase
 import dev.androml.core.database.ClusterPeerRepository
+import dev.androml.core.database.ClusterJobLedgerRepository
 import dev.androml.core.database.ModelCatalogRepository
 import dev.androml.core.database.RagRepository
 import dev.androml.core.database.RuntimeBenchmarkRepository
@@ -87,6 +88,10 @@ class AndroMLApplication : Application() {
         ClusterPeerRepository(catalogDatabase.clusterPeerDao())
     }
 
+    val clusterJobLedger: ClusterJobLedgerRepository by lazy {
+        ClusterJobLedgerRepository(catalogDatabase.clusterJobAttemptDao())
+    }
+
     val workflowDefinitionRepository: dev.androml.core.database.WorkflowDefinitionRepository by lazy {
         dev.androml.core.database.WorkflowDefinitionRepository(catalogDatabase.workflowDefinitionDao())
     }
@@ -118,6 +123,7 @@ class AndroMLApplication : Application() {
             deviceProfileProvider = {
                 AndroidDeviceProfileCollector(applicationContext).collect()
             },
+            ledger = clusterJobLedger,
         )
     }
 
