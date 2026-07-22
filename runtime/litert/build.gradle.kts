@@ -3,20 +3,21 @@ plugins {
 }
 
 android {
-    namespace = "dev.androml.runtime.service"
+    namespace = "dev.androml.runtime.litert"
     compileSdk = 37
 
     defaultConfig {
         minSdk = 29
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
     implementation(project(":runtime:api"))
-    implementation(project(":runtime:litertlm"))
-    implementation(project(":runtime:onnx"))
-    implementation(project(":runtime:litert"))
     implementation(project(":core:model"))
-    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.litert.android)
     testImplementation(libs.junit)
 }

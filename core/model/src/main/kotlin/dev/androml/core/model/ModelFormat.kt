@@ -6,7 +6,7 @@ enum class ModelFormat(
     val runtimeId: String,
     val workloads: Set<ModelWorkload>,
 ) {
-    LiteRt("tflite", "litert", emptySet()),
+    LiteRt("tflite", "litert", setOf(ModelWorkload.TextEmbedding)),
     LiteRtLm("litertlm", "litertlm", setOf(ModelWorkload.TextGeneration)),
     Gguf("gguf", "llamacpp", setOf(ModelWorkload.TextGeneration)),
     Onnx("onnx", "onnxruntime", setOf(ModelWorkload.TextEmbedding)),

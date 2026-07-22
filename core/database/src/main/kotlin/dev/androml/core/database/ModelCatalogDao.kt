@@ -24,7 +24,7 @@ abstract class ModelCatalogDao {
     @Query(
         "SELECT * FROM model_files " +
             "WHERE modelId || '@' || revision = :modelKey AND artifactSha256 IS NOT NULL " +
-            "ORDER BY CASE WHEN path LIKE '%.litertlm' THEN 0 ELSE 1 END, path ASC LIMIT 1",
+            "ORDER BY CASE WHEN path LIKE '%.litertlm' THEN 0 WHEN path LIKE '%.tflite' THEN 1 ELSE 2 END, path ASC LIMIT 1",
     )
     abstract suspend fun fileForModelKey(modelKey: String): ModelFileEntity?
 
@@ -33,7 +33,7 @@ abstract class ModelCatalogDao {
 
     @Query(
         "SELECT DISTINCT modelId || '@' || revision FROM model_files " +
-            "WHERE artifactSha256 IS NOT NULL AND (path LIKE '%.litertlm' OR path LIKE '%.onnx' OR path LIKE '%.ort') " +
+            "WHERE artifactSha256 IS NOT NULL AND (path LIKE '%.litertlm' OR path LIKE '%.tflite' OR path LIKE '%.onnx' OR path LIKE '%.ort') " +
             "ORDER BY modelId ASC, revision ASC",
     )
     abstract suspend fun listRunnableModelKeys(): List<String>

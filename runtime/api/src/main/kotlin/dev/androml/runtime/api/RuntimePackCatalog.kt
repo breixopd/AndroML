@@ -6,8 +6,8 @@ import dev.androml.core.model.ModelWorkload
  * Product-facing inventory of engine packs. A pack is only advertised as usable when its
  * native implementation is actually shipped in the current APK. Keeping this catalogue
  * separate from adapter construction prevents the UI and API from promising an engine that
- * cannot execute a model on the device. The ONNX pack currently exposes bounded text
- * embeddings; other ONNX workloads remain explicit compatibility gaps.
+ * cannot execute a model on the device. LiteRT and ONNX currently expose bounded text
+ * embeddings; other workloads remain explicit compatibility gaps.
  */
 enum class RuntimePackState {
     Bundled,
@@ -27,6 +27,21 @@ data class RuntimePackInfo(
 object RuntimePackCatalog {
     /** Stable IDs are part of the API and must not be renamed between releases. */
     val production: List<RuntimePackInfo> = listOf(
+        RuntimePackInfo(
+            descriptor = RuntimeDescriptor(
+                id = RuntimeId.parse("litert"),
+                version = "1.4.2",
+                supportedAbis = setOf("arm64-v8a", "x86_64"),
+                minAndroidApi = 29,
+                workloads = setOf(ModelWorkload.TextEmbedding),
+                acceleration = AccelerationBackend.Cpu,
+                requiresVulkan = false,
+                memoryOverheadBytes = 64L * 1024L * 1024L,
+                maxContextTokens = 4096,
+            ),
+            state = RuntimePackState.Bundled,
+            note = "CPU text embeddings for .tflite models",
+        ),
         RuntimePackInfo(
             descriptor = RuntimeDescriptor(
                 id = RuntimeId.parse("litertlm"),

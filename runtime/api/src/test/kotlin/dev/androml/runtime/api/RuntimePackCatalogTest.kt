@@ -8,7 +8,8 @@ import org.junit.Test
 class RuntimePackCatalogTest {
     @Test
     fun productionCatalogueOnlyMarksShippedPacksAsUsable() {
-        assertEquals(listOf("litertlm", "onnxruntime"), RuntimePackCatalog.bundled.map { it.descriptor.id.value })
+        assertEquals(listOf("litert", "litertlm", "onnxruntime"), RuntimePackCatalog.bundled.map { it.descriptor.id.value })
+        assertTrue(RuntimePackCatalog.find(RuntimeId.parse("litert"))!!.usable)
         assertTrue(RuntimePackCatalog.find(RuntimeId.parse("litertlm"))!!.usable)
         assertTrue(RuntimePackCatalog.find(RuntimeId.parse("onnxruntime"))!!.usable)
     }
@@ -16,7 +17,7 @@ class RuntimePackCatalogTest {
     @Test
     fun allPlannedEnginesHaveStableIdsAndTruthfulUnavailableState() {
         assertEquals(
-            setOf("litertlm", "llamacpp", "onnxruntime", "executorch", "mlc"),
+            setOf("litert", "litertlm", "llamacpp", "onnxruntime", "executorch", "mlc"),
             RuntimePackCatalog.production.map { it.descriptor.id.value }.toSet(),
         )
         RuntimePackCatalog.production

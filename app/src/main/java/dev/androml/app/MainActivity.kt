@@ -427,9 +427,9 @@ private fun PlaygroundScreen(
                     if (runnableFiles.isEmpty()) {
                         Text(
                             if (selectedWorkload == ModelWorkload.TextGeneration) {
-                                "No verified .litertlm artifact is installed. Discover and verify one from Hugging Face first."
+                                "No verified text-generation model artifact is installed. Discover and verify one from Hugging Face first."
                             } else {
-                                "No verified .onnx or .ort embedding artifact is installed."
+                                "No verified embedding model artifact is installed."
                             },
                         )
                     } else {

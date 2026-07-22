@@ -9,6 +9,7 @@ class RuntimeRegistryTest {
     @Test
     fun bundledRuntimePacksCreateAdapters() {
         val registry = RuntimeRegistry("/does/not/exist/model.litertlm")
+        assertEquals("litert", registry.adapterFor(RuntimeId.parse("litert")).descriptor.id.value)
         assertEquals("litertlm", registry.adapterFor(RuntimeId.parse("litertlm")).descriptor.id.value)
         assertEquals("onnxruntime", registry.adapterFor(RuntimeId.parse("onnxruntime")).descriptor.id.value)
         assertThrows(IllegalStateException::class.java) { registry.adapterFor(RuntimeId.parse("llamacpp")) }
