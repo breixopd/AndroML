@@ -95,7 +95,17 @@ class AndroMLApplication : Application() {
     }
 
     val ragRepository: RagRepository by lazy {
-        RagRepository(catalogDatabase.ragDao())
+        RagRepository(
+            dao = catalogDatabase.ragDao(),
+            embeddingProvider = RuntimeRagEmbeddingProvider(
+                catalogRepository = catalogRepository,
+                artifactStore = artifactStore,
+                inferenceServiceClient = inferenceServiceClient,
+                deviceProfileProvider = {
+                    AndroidDeviceProfileCollector(applicationContext).collect()
+                },
+            ),
+        )
     }
 
     val runtimeBenchmarkRepository: RuntimeBenchmarkRepository by lazy {
