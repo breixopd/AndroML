@@ -102,6 +102,7 @@ class ClusterController(
     private val ragRepository: RagRepository,
     private val deviceProfileProvider: () -> DeviceProfile,
     private val ledger: ClusterJobLedger,
+    private val discovery: ClusterDiscoveryController,
 ) {
     private val _state = MutableStateFlow<ClusterControllerState>(ClusterControllerState.Disabled)
     private val pairingInvites = ClusterPairingInviteIssuer()
@@ -177,6 +178,7 @@ class ClusterController(
             candidate.start()
             synchronized(this) {
                 server = candidate
+                discovery.register(localAdvertisement?.nodeId?.value ?: "unknown", port)
                 ClusterControllerState.Running(
                     host = "0.0.0.0",
                     port = port,
@@ -202,6 +204,8 @@ class ClusterController(
             _state.value = ClusterControllerState.Disabled
             current
         }
+        discovery.stopDiscovery()
+        discovery.unregister()
         oldServer?.stop()
     }
 

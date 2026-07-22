@@ -213,6 +213,7 @@ private fun AndroMLApp() {
                 repository = clusterPeerRepository,
                 tlsIdentityStore = application.clusterTlsIdentityStore,
                 controller = application.clusterController,
+                discovery = application.clusterDiscovery,
             )
         } else {
             SettingsScreen(

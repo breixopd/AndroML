@@ -58,8 +58,10 @@ fun ClusterScreen(
     repository: ClusterPeerRepository,
     tlsIdentityStore: TlsIdentityStore,
     controller: ClusterController,
+    discovery: ClusterDiscoveryController,
 ) {
     val peers by repository.observe().collectAsState(initial = emptyList())
+    val discoveredServices by discovery.services.collectAsState()
     val listenerState by controller.state.collectAsState()
     var localIdentity by remember { mutableStateOf<TlsIdentitySummary?>(null) }
     var peerId by remember { mutableStateOf("") }
@@ -365,6 +367,28 @@ fun ClusterScreen(
                     generatedPairingPayload?.let { payload ->
                         Text("Share this QR/deep-link payload", style = MaterialTheme.typography.labelLarge)
                         SelectionContainer { Text(payload, style = MaterialTheme.typography.bodySmall) }
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("LAN discovery", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Find AndroML listeners on this Wi-Fi network. Discovery never trusts a peer; import its invite and pin the certificate before use.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { discovery.startDiscovery() }, enabled = !busy) { Text("Scan") }
+                        TextButton(onClick = { discovery.stopDiscovery() }, enabled = discoveredServices.isNotEmpty()) { Text("Clear") }
+                    }
+                    discoveredServices.forEach { service ->
+                        Text("${service.serviceName} · ${service.host}:${service.port}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (discoveredServices.isEmpty()) {
+                        Text("No untrusted listeners discovered yet", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }

@@ -92,6 +92,10 @@ class AndroMLApplication : Application() {
         ClusterJobLedgerRepository(catalogDatabase.clusterJobAttemptDao())
     }
 
+    val clusterDiscovery: ClusterDiscoveryController by lazy {
+        ClusterDiscoveryController(applicationContext)
+    }
+
     val workflowDefinitionRepository: dev.androml.core.database.WorkflowDefinitionRepository by lazy {
         dev.androml.core.database.WorkflowDefinitionRepository(catalogDatabase.workflowDefinitionDao())
     }
@@ -124,6 +128,7 @@ class AndroMLApplication : Application() {
                 AndroidDeviceProfileCollector(applicationContext).collect()
             },
             ledger = clusterJobLedger,
+            discovery = clusterDiscovery,
         )
     }
 
@@ -162,6 +167,7 @@ class AndroMLApplication : Application() {
     override fun onTerminate() {
         apiController.close()
         clusterController.close()
+        clusterDiscovery.close()
         inferenceServiceClient.close()
         catalogDatabase.close()
         super.onTerminate()
