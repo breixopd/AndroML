@@ -11,7 +11,8 @@ This repository is public and in the owner-controlled phone-test period. The cur
 - The Home, Settings, Discover, Library, Playground, RAG, Workflows, API, and Cluster screens expose the complete local control surface.
 - Hugging Face search and pinned-commit imports use bounded, resumable, SHA-256 verified downloads. Local RAG accepts text, HTML, PDF, EPUB, DOCX, XLSX, and PPTX sources with citations.
 - LiteRT is bundled for verified `.tflite` text embeddings, LiteRT-LM is bundled for text generation, ONNX Runtime Mobile is bundled for verified `.onnx`/`.ort` text embeddings, and ExecuTorch is bundled for `.pte` tensor embeddings. Other planned engine packs are shown as unavailable until their signed native implementations are shipped; the app never substitutes a fake model result in production.
-- The API includes scoped bearer authentication, loopback/LAN mTLS gates, OpenAI chat/responses/embeddings routes, RAG, tools, workflows, agents, cluster status, and an OpenAPI document.
+- The API includes scoped bearer authentication, loopback/LAN mTLS gates, OpenAI chat/responses/embeddings routes, RAG, tools, workflows, agents, cluster status, and an OpenAPI document. Chat and embeddings resolve a verified artifact to its compatible bundled runtime; malformed runtime vector batches fail closed.
+- Paired cluster nodes publish authenticated mDNS hints and refresh capability/thermal/queue state through a periodic WorkManager heartbeat. Discovery never authorizes a peer: certificate pinning and explicit pairing remain required.
 - Only GitHub Releases are allowed by the product policy.
 - Google Play, F-Droid, Accrescent, IzzyOnDroid, Obtainium manifests, and every other store/repository submission is disabled until the owner explicitly approves it.
 
@@ -44,7 +45,7 @@ export ANDROML_RELEASE_KEY_PASSWORD='provided-by-secret-manager'
 
 ## Test-period release rules
 
-Tags matching `v*` build and publish only the OSS APK to a GitHub Release. The workflow has no store upload step and asserts `STORE_SUBMISSIONS_ENABLED=false`. Store publication requires a deliberate code review and a separate owner approval after the phone-testing period.
+Tags matching `v*` build and publish only the OSS phone-test artifacts to a GitHub Release: a signed universal APK, signed AAB, R8 mapping, checksums, SPDX SBOM, in-toto provenance statement, and a manifest binding them to the source commit. The workflow has no store upload step and asserts `STORE_SUBMISSIONS_ENABLED=false`. Store publication requires a deliberate code review and a separate owner approval after the phone-testing period.
 
 Merges to `main` run Release Please. It opens or updates a release PR from Conventional Commits; merging that PR creates the GitHub tag/release and attaches the verified OSS APK plus SHA-256/SHA-512 checksums. A signing key must be supplied through protected GitHub secrets, and the workflow remains hard-blocked from store publication.
 
