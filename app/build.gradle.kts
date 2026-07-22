@@ -73,6 +73,17 @@ android {
         }
     }
 
+    // Keep a universal APK for easy sideloading and produce ABI-specific artifacts for
+    // phones that should avoid carrying secondary-ABI native libraries.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = true
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true

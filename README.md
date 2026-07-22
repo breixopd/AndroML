@@ -31,7 +31,7 @@ export ANDROID_SDK_ROOT=/path/to/android-sdk
 Install the debug APK on a connected development phone:
 
 ```bash
-adb install -r app/build/outputs/apk/oss/debug/app-oss-debug.apk
+adb install -r app/build/outputs/apk/oss/debug/app-oss-universal-debug.apk
 ```
 
 The release build is intentionally unsigned unless all four signing environment variables are supplied. Never commit the keystore or its values:
@@ -46,7 +46,7 @@ export ANDROML_RELEASE_KEY_PASSWORD='provided-by-secret-manager'
 
 ## Test-period release rules
 
-Tags matching `v*` build and publish only the OSS phone-test artifacts to a GitHub Release: a signed universal APK, signed AAB, R8 mapping, checksums, SPDX SBOM, in-toto provenance statement, and a manifest binding them to the source commit. The workflow has no store upload step and asserts `STORE_SUBMISSIONS_ENABLED=false`. Store publication requires a deliberate code review and a separate owner approval after the phone-testing period.
+Tags matching `v*` build and publish only the OSS phone-test artifacts to a GitHub Release: signed universal and arm64-v8a APKs, signed AAB, R8 mapping, checksums, SPDX SBOM, in-toto provenance statement, and a manifest binding them to the source commit. The workflow has no store upload step and asserts `STORE_SUBMISSIONS_ENABLED=false`. Store publication requires a deliberate code review and a separate owner approval after the phone-testing period.
 
 Merges to `main` run Release Please. It opens or updates a release PR from Conventional Commits; merging that PR creates the GitHub tag/release and attaches the verified OSS APK plus SHA-256/SHA-512 checksums. A signing key must be supplied through protected GitHub secrets, and the workflow remains hard-blocked from store publication.
 
