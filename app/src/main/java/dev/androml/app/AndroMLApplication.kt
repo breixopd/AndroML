@@ -141,6 +141,10 @@ class AndroMLApplication : Application() {
         dev.androml.core.database.WorkflowDefinitionRepository(catalogDatabase.workflowDefinitionDao())
     }
 
+    val approvalStore: DurableApprovalStore by lazy {
+        DurableApprovalStore(catalogDatabase.pendingApprovalDao(), secretStore)
+    }
+
     val apiTlsIdentityStore: TlsIdentityStore by lazy {
         TlsIdentityStore(secretStore)
     }
@@ -183,6 +187,7 @@ class AndroMLApplication : Application() {
             deviceProfileProvider = {
                 AndroidDeviceProfileCollector(applicationContext).collect()
             },
+            approvalStore = approvalStore,
             auditSink = RoomToolAuditSink(catalogDatabase.toolAuditDao()),
         )
     }

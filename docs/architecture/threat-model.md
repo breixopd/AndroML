@@ -21,12 +21,14 @@ signing key are separate trust domains.
 | Replay/downgrade | Immutable HF commit references, content hashes, request deadlines, idempotency keys, attempt numbers, and versioned wire contracts |
 | Paired-device compromise | Explicit owner-approved model transfer, encrypted mTLS transport, resumable chunks, final hash verification, and peer revoke/remove controls |
 | Supply-chain tampering | Pinned GitHub Actions, pinned native toolchain, release checksums, SBOM, in-toto provenance, signing-certificate verification, and CodeQL/security CI |
-| Logs/backups leaking content | App backup is disabled; audit records retain hashes and safe metadata rather than tool arguments/results; secrets stay in Keystore-backed storage |
+| Logs/backups leaking content | App backup is disabled; audit records retain hashes and safe metadata rather than tool arguments/results; pending approval continuations are chunked and Keystore-encrypted, and secrets stay in Keystore-backed storage |
 | Release-signing compromise | Test-period store publication is fail-closed; signing inputs are supplied only through protected CI secrets; no keystore is committed |
 
 ## Deliberate v1 limits
 
-MLC is represented as unavailable until a model-specific signed pack is shipped. The app does
+Pending tool and agent approvals survive process death through a Room metadata index and
+Keystore-encrypted continuation chunks; expiry and argument-hash checks are revalidated before
+execution. MLC is represented as unavailable until a model-specific signed pack is shipped. The app does
 not pretend that an unavailable engine or unsupported workload succeeded. Bundled tensor engines
 accept only bounded caller-supplied buffers after strict shape/type/size validation; preprocessing
 and labels are explicit rather than inferred from an untrusted model. Cluster execution is

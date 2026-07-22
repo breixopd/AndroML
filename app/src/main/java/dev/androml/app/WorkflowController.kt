@@ -67,7 +67,6 @@ import kotlinx.serialization.json.put
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.util.concurrent.ConcurrentHashMap
 
 data class WorkflowRunSnapshot(
     val runId: RunId,
@@ -94,12 +93,11 @@ class WorkflowController(
     private val catalogRepository: dev.androml.core.database.ModelCatalogRepository,
     private val clusterController: ClusterController,
     private val deviceProfileProvider: () -> DeviceProfile,
+    private val approvalStore: DurableApprovalStore,
     private val auditSink: ToolAuditSink = InMemoryToolAuditSink(),
 ) {
     private val _lastRun = MutableStateFlow<WorkflowRunSnapshot?>(null)
     val lastRun: StateFlow<WorkflowRunSnapshot?> = _lastRun.asStateFlow()
-    private val pendingToolApprovals = ConcurrentHashMap<String, PendingToolApproval>()
-    private val pendingAgentApprovals = ConcurrentHashMap<String, PendingAgentApproval>()
 
     private val tools = ToolRegistry().also { registry ->
         registry.register(
@@ -266,17 +264,13 @@ class WorkflowController(
             ),
         )
         if (outcome is ToolExecutionOutcome.ApprovalRequired) {
-            pendingToolApprovals[outcome.approval.approvalId] = PendingToolApproval(
-                toolId = toolId,
-                arguments = arguments,
-                approval = outcome.approval,
-            )
+            approvalStore.saveTool(outcome.approval, toolId, arguments)
         }
         outcome
     }
 
     suspend fun approveTool(approvalId: String): ToolExecutionOutcome = withContext(Dispatchers.IO) {
-        val pending = pendingToolApprovals.remove(approvalId)
+        val pending = approvalStore.consumeTool(approvalId)
             ?: return@withContext unknownApprovalOutcome()
         val outcome = ToolExecutor(tools, auditSink = auditSink).execute(
             toolId = pending.toolId,
@@ -287,7 +281,7 @@ class WorkflowController(
             approval = pending.approval,
         )
         if (outcome is ToolExecutionOutcome.ApprovalRequired) {
-            pendingToolApprovals[outcome.approval.approvalId] = pending.copy(approval = outcome.approval)
+            approvalStore.saveTool(outcome.approval, pending.toolId, pending.arguments)
         }
         outcome
     }
@@ -309,7 +303,7 @@ class WorkflowController(
         }
 
     suspend fun approveAgent(approvalId: String): AgentInvocationSnapshot = withContext(Dispatchers.IO) {
-        val pending = pendingAgentApprovals.remove(approvalId)
+        val pending = approvalStore.consumeAgent(approvalId)
             ?: return@withContext AgentInvocationSnapshot(
                 status = "Failed",
                 error = "agent approval is unknown or already consumed",
@@ -597,29 +591,13 @@ class WorkflowController(
         val nodeId: NodeId?,
     )
 
-    private data class PendingToolApproval(
-        val toolId: ToolId,
-        val arguments: JsonObject,
-        val approval: ToolApproval,
-    )
-
-    private data class PendingAgentApproval(
-        val modelHash: ContentHash,
-        val continuation: AgentContinuation,
-        val approval: ToolApproval,
-    )
-
-    private fun rememberPendingAgent(
+    private suspend fun rememberPendingAgent(
         modelHash: ContentHash,
         result: dev.androml.core.agents.AgentRunResult,
     ) {
         val approval = result.pendingApproval ?: return
         val continuation = result.continuation ?: return
-        pendingAgentApprovals[approval.approvalId] = PendingAgentApproval(
-            modelHash = modelHash,
-            continuation = continuation,
-            approval = approval,
-        )
+        approvalStore.saveAgent(approval, modelHash, continuation)
     }
 
     private fun unknownApprovalOutcome(): ToolExecutionOutcome.Denied =
