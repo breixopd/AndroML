@@ -50,8 +50,11 @@ data class ApiKeyRecord(
 ) {
     init {
         require(displayName.isNotBlank() && displayName.length <= 128) { "API key display name is invalid" }
-        require(tokenHash.startsWith(Argon2idCodec.PREFIX) && tokenHash.length <= 512) {
-            "API key hash must be Argon2id"
+        require(
+            (tokenHash.startsWith(Argon2idCodec.PREFIX) && tokenHash.length <= 512) ||
+                tokenHash.matches(SHA256_PATTERN),
+        ) {
+            "API key hash must be Argon2id or a legacy SHA-256 value"
         }
         require(scopes.isNotEmpty()) { "API key must have at least one scope" }
         require(expiresAtEpochMillis == null || expiresAtEpochMillis > createdAtEpochMillis) {
@@ -128,7 +131,17 @@ class ApiKeyAuthenticator {
         return records.firstOrNull { record ->
             record.isUsableAt(nowEpochMillis) &&
                 requiredScope in record.scopes &&
-                runCatching { Argon2idCodec.verify(plaintextToken, record.tokenHash) }.getOrDefault(false)
+                if (record.tokenHash.startsWith(Argon2idCodec.PREFIX)) {
+                    runCatching { Argon2idCodec.verify(plaintextToken, record.tokenHash) }.getOrDefault(false)
+                } else {
+                    val supplied = MessageDigest.getInstance("SHA-256")
+                        .digest(plaintextToken.toByteArray(Charsets.UTF_8))
+                        .joinToString("") { byte -> "%02x".format(Locale.ROOT, byte) }
+                    MessageDigest.isEqual(
+                        supplied.toByteArray(Charsets.US_ASCII),
+                        record.tokenHash.toByteArray(Charsets.US_ASCII),
+                    )
+                }
         }?.let { ApiAuthResult(it, requiredScope) }
     }
 }
