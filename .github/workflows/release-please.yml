@@ -75,6 +75,7 @@ jobs:
       - name: Build OSS test release APK
         if: steps.release.outputs.release_created == 'true'
         env:
+          ANDROML_PREPARE_LLAMA_CPP: 'true'
           ANDROML_RELEASE_KEYSTORE: ${{ runner.temp }}/androml-test-release.jks
           ANDROML_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROML_RELEASE_STORE_PASSWORD }}
           ANDROML_RELEASE_KEY_ALIAS: ${{ secrets.ANDROML_RELEASE_KEY_ALIAS }}

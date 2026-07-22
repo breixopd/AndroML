@@ -68,6 +68,7 @@ jq -n \
         {SPDXID:"SPDXRef-Package-LiteRT-LM",name:"LiteRT-LM",versionInfo:"0.14.0",downloadLocation:"https://ai.google.dev/edge/litert/next/litertlm",filesAnalyzed:false},
         {SPDXID:"SPDXRef-Package-ONNX",name:"ONNX Runtime Mobile",versionInfo:"1.26.0",downloadLocation:"https://onnxruntime.ai",filesAnalyzed:false},
         {SPDXID:"SPDXRef-Package-ExecuTorch",name:"ExecuTorch Android",versionInfo:"0.6.0-rc1",downloadLocation:"https://pytorch.org/executorch",filesAnalyzed:false}
+        ,{SPDXID:"SPDXRef-Package-llama.cpp",name:"llama.cpp Android arm64 pack",versionInfo:"b10079",downloadLocation:"https://github.com/ggml-org/llama.cpp/releases/tag/b10079",filesAnalyzed:false}
       ],files:[
         {SPDXID:"SPDXRef-File-APK",fileName:$apk,checksums:[{algorithm:"SHA256",checksumValue:$apk_sha256}]},
         {SPDXID:"SPDXRef-File-AAB",fileName:$aab,checksums:[{algorithm:"SHA256",checksumValue:$aab_sha256}]}

@@ -26,7 +26,8 @@ data class RuntimePackInfo(
 
 object RuntimePackCatalog {
     /** Stable IDs are part of the API and must not be renamed between releases. */
-    val production: List<RuntimePackInfo> = listOf(
+    val production: List<RuntimePackInfo>
+        get() = listOf(
         RuntimePackInfo(
             descriptor = RuntimeDescriptor(
                 id = RuntimeId.parse("litert"),
@@ -58,16 +59,6 @@ object RuntimePackCatalog {
             note = "CPU text generation",
         ),
         RuntimePackInfo(
-            descriptor = unavailableDescriptor(
-                id = "llamacpp",
-                version = "pending",
-                workloads = setOf(ModelWorkload.TextGeneration),
-                note = "Native pack is not included in this build",
-            ),
-            state = RuntimePackState.NotBundled,
-            note = "Install a future signed runtime pack before use",
-        ),
-        RuntimePackInfo(
             descriptor = RuntimeDescriptor(
                 id = RuntimeId.parse("onnxruntime"),
                 version = "1.26.0",
@@ -97,6 +88,7 @@ object RuntimePackCatalog {
             state = RuntimePackState.Bundled,
             note = "CPU tensor embeddings for .pte models",
         ),
+        llamaPack(),
         RuntimePackInfo(
             descriptor = unavailableDescriptor(
                 id = "mlc",
@@ -113,6 +105,26 @@ object RuntimePackCatalog {
         get() = production.filter(RuntimePackInfo::usable)
 
     fun find(id: RuntimeId): RuntimePackInfo? = production.firstOrNull { it.descriptor.id == id }
+
+    private fun llamaPack(): RuntimePackInfo {
+        val bundled = System.getProperty("androml.runtime.llamacpp.bundled") == "true"
+        return RuntimePackInfo(
+            descriptor = RuntimeDescriptor(
+                id = RuntimeId.parse("llamacpp"),
+                version = if (bundled) "b10079" else "pending",
+                supportedAbis = setOf("arm64-v8a"),
+                minAndroidApi = 29,
+                workloads = setOf(ModelWorkload.TextGeneration),
+                acceleration = AccelerationBackend.Cpu,
+                requiresVulkan = false,
+                memoryOverheadBytes = 256L * 1024L * 1024L,
+                maxContextTokens = 32_768,
+                isAvailable = bundled,
+            ),
+            state = if (bundled) RuntimePackState.Bundled else RuntimePackState.NotBundled,
+            note = if (bundled) "Pinned llama.cpp b10079 arm64 CPU pack" else "Install a future signed runtime pack before use",
+        )
+    }
 
     private fun unavailableDescriptor(
         id: String,

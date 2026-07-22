@@ -38,6 +38,7 @@ import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.api.RuntimePackCatalog
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
+import dev.androml.runtime.llamacpp.LlamaCppRuntimeAvailability
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -57,6 +58,7 @@ import java.util.concurrent.TimeUnit
 class AndroMLApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        LlamaCppRuntimeAvailability.advertise()
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             CLUSTER_HEARTBEAT_WORK_NAME,
             ExistingPeriodicWorkPolicy.KEEP,

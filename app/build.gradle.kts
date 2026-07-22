@@ -60,6 +60,7 @@ android {
             ) {
                 signingConfig = signingConfigs.create("testRelease") {
                     storeFile = file(releaseKeystorePath)
+                    storeType = "JKS"
                     storePassword = releaseStorePassword
                     keyAlias = releaseKeyAlias
                     keyPassword = releaseKeyPassword
@@ -109,6 +110,7 @@ dependencies {
     implementation(project(":runtime:onnx"))
     implementation(project(":runtime:litert"))
     implementation(project(":runtime:executorch"))
+    implementation(project(":runtime:llamacpp"))
     implementation(project(":runtime:service"))
     implementation(project(":optimizer"))
     implementation(libs.androidx.core.ktx)
