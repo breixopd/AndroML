@@ -6,8 +6,8 @@ import dev.androml.core.model.ModelWorkload
  * Product-facing inventory of engine packs. A pack is only advertised as usable when its
  * native implementation is actually shipped in the current APK. Keeping this catalogue
  * separate from adapter construction prevents the UI and API from promising an engine that
- * cannot execute a model on the device. LiteRT and ONNX currently expose bounded text
- * embeddings; other workloads remain explicit compatibility gaps.
+ * cannot execute a model on the device. Tensor packs accept an explicit bounded input tensor;
+ * callers remain responsible for model-specific preprocessing and labels.
  */
 enum class RuntimePackState {
     Bundled,
@@ -34,14 +34,14 @@ object RuntimePackCatalog {
                 version = "1.4.2",
                 supportedAbis = setOf("arm64-v8a", "x86_64"),
                 minAndroidApi = 29,
-                workloads = setOf(ModelWorkload.TextEmbedding),
+                workloads = tensorWorkloads(),
                 acceleration = AccelerationBackend.Cpu,
                 requiresVulkan = false,
                 memoryOverheadBytes = 64L * 1024L * 1024L,
                 maxContextTokens = 4096,
             ),
             state = RuntimePackState.Bundled,
-            note = "CPU text embeddings for .tflite models",
+            note = "CPU tensor inference for .tflite models (text embeddings and image/audio tasks)",
         ),
         RuntimePackInfo(
             descriptor = RuntimeDescriptor(
@@ -64,14 +64,14 @@ object RuntimePackCatalog {
                 version = "1.26.0",
                 supportedAbis = setOf("arm64-v8a", "x86_64"),
                 minAndroidApi = 29,
-                workloads = setOf(ModelWorkload.TextEmbedding),
+                workloads = tensorWorkloads(),
                 acceleration = AccelerationBackend.Cpu,
                 requiresVulkan = false,
                 memoryOverheadBytes = 96L * 1024L * 1024L,
                 maxContextTokens = 4096,
             ),
             state = RuntimePackState.Bundled,
-            note = "CPU text embeddings; optional NNAPI compatibility backend",
+            note = "CPU tensor inference; optional NNAPI compatibility backend",
         ),
         RuntimePackInfo(
             descriptor = RuntimeDescriptor(
@@ -79,14 +79,14 @@ object RuntimePackCatalog {
                 version = "0.6.0-rc1",
                 supportedAbis = setOf("arm64-v8a", "x86_64"),
                 minAndroidApi = 29,
-                workloads = setOf(ModelWorkload.TextEmbedding),
+                workloads = tensorWorkloads(),
                 acceleration = AccelerationBackend.Cpu,
                 requiresVulkan = false,
                 memoryOverheadBytes = 96L * 1024L * 1024L,
                 maxContextTokens = 4096,
             ),
             state = RuntimePackState.Bundled,
-            note = "CPU tensor embeddings for .pte models",
+            note = "CPU tensor inference for .pte models",
         ),
         llamaPack(),
         RuntimePackInfo(
@@ -125,6 +125,14 @@ object RuntimePackCatalog {
             note = if (bundled) "Pinned llama.cpp b10079 arm64 CPU pack" else "Install a future signed runtime pack before use",
         )
     }
+
+    private fun tensorWorkloads(): Set<ModelWorkload> = setOf(
+        ModelWorkload.TextEmbedding,
+        ModelWorkload.ImageClassification,
+        ModelWorkload.ObjectDetection,
+        ModelWorkload.ImageSegmentation,
+        ModelWorkload.AudioClassification,
+    )
 
     private fun unavailableDescriptor(
         id: String,

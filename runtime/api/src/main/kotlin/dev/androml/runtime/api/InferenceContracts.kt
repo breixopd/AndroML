@@ -1,6 +1,8 @@
 package dev.androml.runtime.api
 
 import dev.androml.core.model.ModelRequirements
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
 
 @JvmInline
@@ -50,12 +52,64 @@ data class RuntimeConfiguration(
     }
 }
 
+/** Primitive tensor encodings accepted across the isolated runtime boundary. */
+enum class TensorDataType(val byteSize: Int) {
+    Float32(4),
+    Int32(4),
+    Int64(8),
+    UInt8(1),
+    Int8(1),
+}
+
+/**
+ * Bounded raw tensor input for image/audio and other non-text models.
+ *
+ * The payload is deliberately a plain byte array so the service can validate and transfer it
+ * through a primitive-only Bundle. Model-specific preprocessing (normalisation, channel order,
+ * sample rate, and labels) remains explicit in the caller; the runtime never guesses it.
+ */
+data class TensorInput(
+    val data: ByteArray,
+    val shape: LongArray,
+    val dataType: TensorDataType = TensorDataType.Float32,
+) {
+    val elementCount: Long = shape.fold(1L) { total, dimension ->
+        when {
+            dimension <= 0L -> MAX_ELEMENTS + 1L
+            total > MAX_ELEMENTS / dimension -> MAX_ELEMENTS + 1L
+            else -> total * dimension
+        }
+    }
+
+    init {
+        require(data.isNotEmpty()) { "tensor input must not be empty" }
+        require(data.size <= MAX_BYTES) { "tensor input exceeds the safety limit" }
+        require(shape.isNotEmpty() && shape.size <= MAX_RANK) { "tensor rank is out of bounds" }
+        require(shape.all { it in 1L..MAX_DIMENSION }) { "tensor dimensions are out of bounds" }
+        require(elementCount <= MAX_ELEMENTS) { "tensor has too many elements" }
+        require(data.size.toLong() == elementCount * dataType.byteSize) {
+            "tensor byte length does not match its shape and type"
+        }
+    }
+
+    /** A native-order view used by the bundled tensor adapters. */
+    fun nativeBuffer(): ByteBuffer = ByteBuffer.wrap(data).order(ByteOrder.nativeOrder())
+
+    companion object {
+        const val MAX_BYTES = 8 * 1024 * 1024
+        const val MAX_RANK = 8
+        const val MAX_DIMENSION = 65_536L
+        const val MAX_ELEMENTS = 2_000_000L
+    }
+}
+
 data class InferenceRequest(
     val id: InferenceRequestId,
     val prompt: String,
     val maxNewTokens: Int,
     val temperature: Double,
     val stopSequences: List<String> = emptyList(),
+    val tensorInput: TensorInput? = null,
 ) {
     init {
         require(prompt.length <= MAX_PROMPT_CHARS) { "prompt exceeds the safety limit" }

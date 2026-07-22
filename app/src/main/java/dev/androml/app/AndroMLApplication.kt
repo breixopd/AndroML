@@ -8,6 +8,8 @@ import dev.androml.api.server.ApiServerConfig
 import dev.androml.api.server.ChatCompletionRequest
 import dev.androml.api.server.ChatDelta
 import dev.androml.api.server.EmbeddingsRequest
+import dev.androml.api.server.TensorInferenceRequest
+import dev.androml.api.server.TensorInferenceResponse
 import dev.androml.api.server.ApiFeatureGateway
 import dev.androml.core.api.BindMode
 import dev.androml.core.database.ApiKeyRepository
@@ -38,6 +40,8 @@ import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.api.RuntimePackCatalog
+import dev.androml.runtime.api.TensorDataType
+import dev.androml.runtime.api.TensorInput
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
 import dev.androml.runtime.llamacpp.LlamaCppRuntimeAvailability
@@ -458,6 +462,75 @@ private class IsolatedRuntimeApiGateway(
             descriptor.close()
         }
     }
+
+    override suspend fun tensorInference(request: TensorInferenceRequest): TensorInferenceResponse =
+        withContext(Dispatchers.IO) {
+            val workload = runCatching { ModelWorkload.valueOf(request.workload) }
+                .getOrElse { throw IllegalArgumentException("requested tensor workload is unsupported") }
+            require(
+                workload in setOf(
+                    ModelWorkload.ImageClassification,
+                    ModelWorkload.ObjectDetection,
+                    ModelWorkload.ImageSegmentation,
+                    ModelWorkload.AudioClassification,
+                ),
+            ) { "requested tensor workload is unsupported" }
+            val modelFile = catalogRepository.filesForModelKey(request.model)
+                .firstOrNull { ModelFormatClassifier.supports(it.path, workload) }
+                ?: throw IllegalArgumentException("requested model has no supported tensor artifact")
+            val artifactHash = modelFile.artifactSha256
+                ?: throw IllegalArgumentException("requested model artifact is not verified")
+            check(artifactStore.contains(artifactHash)) { "requested model artifact is missing" }
+            val runtimeId = RuntimeId.parse(ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+                ?: throw IllegalArgumentException("requested model format is unsupported"))
+            val modelRequirements = ModelRequirements(
+                workload = workload,
+                weightBytes = modelFile.sizeBytes,
+                contextTokens = 1,
+            )
+            val configuration = optimizedConfiguration(deviceProfileProvider(), modelRequirements, runtimeId)
+            val descriptor = ParcelFileDescriptor.open(
+                artifactStore.fileFor(artifactHash),
+                ParcelFileDescriptor.MODE_READ_ONLY,
+            )
+            var session: OpenedInferenceSession? = null
+            try {
+                session = inferenceServiceClient.openSession(
+                    model = modelRequirements,
+                    configuration = configuration,
+                    runtimeId = runtimeId,
+                    modelFile = descriptor,
+                )
+                val values = mutableListOf<Double>()
+                inferenceServiceClient.stream(
+                    session,
+                    InferenceRequest(
+                        id = InferenceRequestId.parse("tensor-${UUID.randomUUID()}"),
+                        prompt = "tensor",
+                        maxNewTokens = 1,
+                        temperature = 0.0,
+                        tensorInput = TensorInput(
+                            data = request.data,
+                            shape = request.shape,
+                            dataType = runCatching { TensorDataType.valueOf(request.dataType) }
+                                .getOrElse { throw IllegalArgumentException("tensor data type is unsupported") },
+                        ),
+                    ),
+                ).collect { event ->
+                    when (event) {
+                        is InferenceEvent.Token -> values += parseEmbeddingValues(event.text)
+                        is InferenceEvent.Failed -> error(event.safeMessage)
+                        is InferenceEvent.Cancelled -> error("tensor request was cancelled")
+                        is InferenceEvent.Started, is InferenceEvent.Completed -> Unit
+                    }
+                }
+                require(values.isNotEmpty()) { "tensor runtime returned no output" }
+                TensorInferenceResponse(values.take(1_000_000), session.runtimeId.value)
+            } finally {
+                session?.let(inferenceServiceClient::closeSession)
+                descriptor.close()
+            }
+        }
 
     private fun optimizedConfiguration(
         device: dev.androml.core.model.DeviceProfile,

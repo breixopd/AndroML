@@ -21,6 +21,8 @@ import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.api.RuntimeIncompatibilityReason
 import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
+import dev.androml.runtime.api.TensorDataType
+import dev.androml.runtime.api.TensorInput
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -61,8 +63,8 @@ class OnnxRuntimeAdapter(
         model: ModelRequirements,
         configuration: RuntimeConfiguration,
     ): RuntimeSession {
-        check(model.workload == ModelWorkload.TextEmbedding) {
-            "ONNX Runtime Mobile adapter currently serves text embeddings only"
+        check(model.workload in descriptor.workloads) {
+            "ONNX Runtime Mobile adapter does not serve ${model.workload}"
         }
         check(inspect(model).compatible) { "ONNX Runtime Mobile cannot serve this model" }
         val environment = OrtEnvironment.getEnvironment()
@@ -99,7 +101,13 @@ object OnnxRuntimeDescriptor {
         version = "1.26.0",
         supportedAbis = setOf("arm64-v8a", "x86_64"),
         minAndroidApi = 29,
-        workloads = setOf(ModelWorkload.TextEmbedding),
+        workloads = setOf(
+            ModelWorkload.TextEmbedding,
+            ModelWorkload.ImageClassification,
+            ModelWorkload.ObjectDetection,
+            ModelWorkload.ImageSegmentation,
+            ModelWorkload.AudioClassification,
+        ),
         acceleration = AccelerationBackend.Cpu,
         requiresVulkan = false,
         memoryOverheadBytes = 96L * 1024L * 1024L,
@@ -125,8 +133,11 @@ private class OnnxRuntimeSession(
         val startedAt = System.nanoTime()
         try {
             val tokenIds = tokenize(request.prompt)
+            if (request.tensorInput != null) require(session.inputInfo.size == 1) {
+                "tensor input requires a single ONNX model input"
+            }
             val inputs = session.inputInfo.mapValues { (_, node) ->
-                createInput(node, tokenIds)
+                createInput(node, tokenIds, request.tensorInput)
             }
             try {
                 session.run(inputs).use { result ->
@@ -157,8 +168,9 @@ private class OnnxRuntimeSession(
         // OrtEnvironment is process-global; it must not be closed by one session.
     }
 
-    private fun createInput(node: NodeInfo, tokenIds: LongArray): OnnxTensor {
+    private fun createInput(node: NodeInfo, tokenIds: LongArray, tensorInput: TensorInput?): OnnxTensor {
         val info = node.info as? TensorInfo ?: error("ONNX input is not a tensor")
+        if (tensorInput != null) return createTensorInput(info, tensorInput)
         val shape = normalizedShape(info, tokenIds.size)
         return when (info.type) {
             OnnxJavaType.INT64 -> OnnxTensor.createTensor(environment, LongBuffer.wrap(tokenIds), shape)
@@ -187,6 +199,34 @@ private class OnnxRuntimeSession(
                 OnnxJavaType.BOOL,
             )
             else -> error("unsupported ONNX input type ${info.type}")
+        }
+    }
+
+    private fun createTensorInput(info: TensorInfo, input: TensorInput): OnnxTensor {
+        val shape = input.shape
+        require(shape.size == info.shape.size) { "tensor input rank does not match the ONNX model" }
+        info.shape.forEachIndexed { index, dimension ->
+            if (dimension > 0L) require(dimension == shape[index]) {
+                "tensor input shape does not match the ONNX model"
+            }
+        }
+        val expectedType = when (input.dataType) {
+            TensorDataType.Float32 -> OnnxJavaType.FLOAT
+            TensorDataType.Int32 -> OnnxJavaType.INT32
+            TensorDataType.Int64 -> OnnxJavaType.INT64
+            TensorDataType.UInt8 -> OnnxJavaType.UINT8
+            TensorDataType.Int8 -> OnnxJavaType.INT8
+        }
+        require(info.type == expectedType) {
+            "tensor input type does not match the ONNX model"
+        }
+        val buffer = input.nativeBuffer()
+        return when (input.dataType) {
+            TensorDataType.Float32 -> OnnxTensor.createTensor(environment, buffer.asFloatBuffer(), shape)
+            TensorDataType.Int32 -> OnnxTensor.createTensor(environment, buffer.asIntBuffer(), shape)
+            TensorDataType.Int64 -> OnnxTensor.createTensor(environment, buffer.asLongBuffer(), shape)
+            TensorDataType.UInt8 -> OnnxTensor.createTensor(environment, buffer, shape, OnnxJavaType.UINT8)
+            TensorDataType.Int8 -> OnnxTensor.createTensor(environment, buffer, shape, OnnxJavaType.INT8)
         }
     }
 

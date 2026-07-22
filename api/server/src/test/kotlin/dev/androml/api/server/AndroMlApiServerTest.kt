@@ -22,6 +22,7 @@ import java.io.IOException
 import java.net.ServerSocket
 import javax.net.ssl.HttpsURLConnection
 import java.net.URL
+import java.util.Base64
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.serialization.json.put
@@ -204,6 +205,9 @@ class AndroMlApiServerTest {
 
             override suspend fun embeddings(request: EmbeddingsRequest): List<List<Double>> =
                 request.inputs.map { listOf(it.length.toDouble(), 1.0) }
+
+            override suspend fun tensorInference(request: TensorInferenceRequest): TensorInferenceResponse =
+                TensorInferenceResponse(listOf(0.25, 0.75), "litert")
         }
         val server = AndroMlApiServer(
             config = ApiServerConfig(),
@@ -232,10 +236,22 @@ class AndroMlApiServerTest {
         assertTrue(responses.bodyAsText().contains("response"))
         assertTrue(responses.bodyAsText().contains("hello"))
 
+        val tensor = client.post("/api/v1/tensor/inference") {
+            header(HttpHeaders.Authorization, "Bearer ${generated.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                """{"model":"vision","workload":"ImageClassification","data":"${Base64.getEncoder().encodeToString(ByteArray(4))}","shape":[1],"data_type":"Float32"}""",
+            )
+        }
+        assertEquals(HttpStatusCode.OK, tensor.status)
+        assertTrue(tensor.bodyAsText().contains("tensor.inference"))
+        assertTrue(tensor.bodyAsText().contains("0.25"))
+
         val openApi = client.get("/openapi.json")
         assertEquals(HttpStatusCode.OK, openApi.status)
         assertTrue(openApi.bodyAsText().contains("/v1/responses"))
         assertTrue(openApi.bodyAsText().contains("/api/v1/responses"))
+        assertTrue(openApi.bodyAsText().contains("/api/v1/tensor/inference"))
     }
 
     @Test

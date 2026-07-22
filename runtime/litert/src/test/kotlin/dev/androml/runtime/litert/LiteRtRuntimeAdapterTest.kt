@@ -12,6 +12,8 @@ class LiteRtRuntimeAdapterTest {
     fun descriptorExposesBundledTextEmbeddingWorkload() {
         assertEquals("litert", LiteRtRuntimeDescriptor.value.id.value)
         assertTrue(ModelWorkload.TextEmbedding in LiteRtRuntimeDescriptor.value.workloads)
+        assertTrue(ModelWorkload.ImageClassification in LiteRtRuntimeDescriptor.value.workloads)
+        assertTrue(ModelWorkload.AudioClassification in LiteRtRuntimeDescriptor.value.workloads)
     }
 
     @Test

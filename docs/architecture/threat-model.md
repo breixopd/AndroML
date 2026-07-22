@@ -27,7 +27,9 @@ signing key are separate trust domains.
 ## Deliberate v1 limits
 
 MLC is represented as unavailable until a model-specific signed pack is shipped. The app does
-not pretend that an unavailable engine or unsupported workload succeeded. Cluster execution is
+not pretend that an unavailable engine or unsupported workload succeeded. Bundled tensor engines
+accept only bounded caller-supplied buffers after strict shape/type/size validation; preprocessing
+and labels are explicit rather than inferred from an untrusted model. Cluster execution is
 whole-request replication and bounded workflow/RAG placement; arbitrary tensor sharding and WAN
 listeners are not enabled.
 

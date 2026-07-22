@@ -20,6 +20,8 @@ import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
 import dev.androml.runtime.api.RuntimePackCatalog
+import dev.androml.runtime.api.TensorDataType
+import dev.androml.runtime.api.TensorInput
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
 import kotlinx.coroutines.CancellationException
@@ -219,14 +221,31 @@ class InferenceProcessService : Service() {
         val id = parseRequestId(data) ?: return null
         val prompt = data.getString(InferenceServiceProtocol.PROMPT_KEY) ?: return null
         if (prompt.length > InferenceServiceProtocol.MAX_PROMPT_CHARS) return null
+        val tensorKeysPresent = data.containsKey(InferenceServiceProtocol.TENSOR_INPUT_DATA_KEY) ||
+            data.containsKey(InferenceServiceProtocol.TENSOR_INPUT_SHAPE_KEY) ||
+            data.containsKey(InferenceServiceProtocol.TENSOR_INPUT_TYPE_KEY)
+        val tensorInput = parseTensorInput(data)
+        if (tensorKeysPresent && tensorInput == null) return null
         return runCatching {
             InferenceRequest(
                 id = id,
                 prompt = prompt,
                 maxNewTokens = data.getInt(InferenceServiceProtocol.MAX_NEW_TOKENS_KEY, -1),
                 temperature = data.getDouble(InferenceServiceProtocol.TEMPERATURE_KEY, Double.NaN),
+                tensorInput = tensorInput,
             )
         }.getOrNull()
+    }
+
+    private fun parseTensorInput(data: Bundle): TensorInput? {
+        @Suppress("DEPRECATION")
+        val bytes = data.getByteArray(InferenceServiceProtocol.TENSOR_INPUT_DATA_KEY) ?: return null
+        val shape = data.getLongArray(InferenceServiceProtocol.TENSOR_INPUT_SHAPE_KEY) ?: return null
+        val type = data.getString(InferenceServiceProtocol.TENSOR_INPUT_TYPE_KEY)
+            ?.let { raw -> runCatching { TensorDataType.valueOf(raw) }.getOrNull() }
+            ?: return null
+        if (bytes.size > InferenceServiceProtocol.MAX_TENSOR_INPUT_BYTES) return null
+        return runCatching { TensorInput(bytes, shape, type) }.getOrNull()
     }
 
     private fun sendEvent(replyTo: Messenger, sessionId: SessionId, event: InferenceEvent) {

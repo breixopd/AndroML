@@ -33,6 +33,9 @@ object InferenceServiceProtocol {
     const val PROMPT_KEY = "prompt"
     const val MAX_NEW_TOKENS_KEY = "max_new_tokens"
     const val TEMPERATURE_KEY = "temperature"
+    const val TENSOR_INPUT_DATA_KEY = "tensor_input_data"
+    const val TENSOR_INPUT_SHAPE_KEY = "tensor_input_shape"
+    const val TENSOR_INPUT_TYPE_KEY = "tensor_input_type"
     const val TOKEN_KEY = "token"
     const val GENERATED_TOKENS_KEY = "generated_tokens"
     const val DURATION_MS_KEY = "duration_ms"
@@ -43,4 +46,5 @@ object InferenceServiceProtocol {
 
     const val MAX_MODEL_WORKLOAD_CHARS = 64
     const val MAX_PROMPT_CHARS = 64 * 1024
+    const val MAX_TENSOR_INPUT_BYTES = 8 * 1024 * 1024
 }

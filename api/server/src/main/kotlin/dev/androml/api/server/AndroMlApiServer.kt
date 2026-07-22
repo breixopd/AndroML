@@ -48,12 +48,14 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
+import java.util.Base64
 import io.netty.handler.ssl.SslHandler
 
 data class ApiServerConfig(
@@ -79,6 +81,9 @@ interface ApiInferenceGateway {
     /** Returns model-backed vectors when the host can execute the requested artifact. */
     suspend fun embeddings(request: EmbeddingsRequest): List<List<Double>> =
         throw IllegalStateException("embedding runtime is not configured")
+
+    suspend fun tensorInference(request: TensorInferenceRequest): TensorInferenceResponse =
+        throw IllegalStateException("tensor runtime is not configured")
 }
 
 data class ChatMessage(
@@ -219,6 +224,57 @@ data class ResponsesRequest(
             maxTokens = root.intOrDefault("max_output_tokens", root.intOrDefault("max_tokens", 256)),
             temperature = root.doubleOrDefault("temperature", 0.7),
         )
+    }
+}
+
+/** API transport for a caller-preprocessed image/audio tensor. */
+data class TensorInferenceRequest(
+    val model: String,
+    val workload: String,
+    val data: ByteArray,
+    val shape: LongArray,
+    val dataType: String,
+) {
+    init {
+        require(model.isNotBlank() && model.length <= 256) { "model is invalid" }
+        require(workload.matches(Regex("[A-Za-z][A-Za-z0-9_]{0,63}"))) { "workload is invalid" }
+        require(data.size in 1..MAX_DATA_BYTES) { "tensor data is out of bounds" }
+        require(shape.isNotEmpty() && shape.size <= 8 && shape.all { it in 1L..65_536L }) {
+            "tensor shape is out of bounds"
+        }
+        require(dataType in DATA_TYPES) { "tensor data type is unsupported" }
+    }
+
+    companion object {
+        const val MAX_DATA_BYTES = 8 * 1024 * 1024
+        val DATA_TYPES = setOf("Float32", "Int32", "Int64", "UInt8", "Int8")
+
+        fun parse(root: JsonObject): TensorInferenceRequest {
+            val encoded = root.string("data")
+            val data = runCatching { Base64.getDecoder().decode(encoded) }
+                .getOrElse { throw IllegalArgumentException("tensor data is invalid") }
+            val shape = root["shape"]?.jsonArray?.map {
+                it.jsonPrimitive.longOrNull ?: throw IllegalArgumentException("tensor shape is invalid")
+            }?.toLongArray() ?: throw IllegalArgumentException("tensor shape is missing")
+            return TensorInferenceRequest(
+                model = root.string("model"),
+                workload = root.string("workload"),
+                data = data,
+                shape = shape,
+                dataType = root.string("data_type"),
+            )
+        }
+    }
+}
+
+data class TensorInferenceResponse(
+    val output: List<Double>,
+    val runtimeId: String,
+) {
+    init {
+        require(output.size in 1..1_000_000) { "tensor output is out of bounds" }
+        require(output.all(Double::isFinite)) { "tensor output contains a non-finite value" }
+        require(runtimeId.matches(Regex("[a-z0-9][a-z0-9._-]{0,63}"))) { "runtime ID is invalid" }
     }
 }
 
@@ -611,6 +667,30 @@ class AndroMlApiServer(
                     ContentType.Application.Json,
                 )
             }
+            apiPost("/tensor/inference") {
+                val call = this
+                if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
+                val request = runCatching {
+                    TensorInferenceRequest.parse(call.receiveBoundedJson(config.maxRequestBodyBytes))
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                val response = runCatching { inference.tensorInference(request) }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                call.respondText(
+                    Json.encodeToString(buildJsonObject {
+                        put("object", "tensor.inference")
+                        put("model", request.model)
+                        put("workload", request.workload)
+                        put("runtime", response.runtimeId)
+                        put("output", buildJsonArray { response.output.forEach { add(JsonPrimitive(it)) } })
+                    }),
+                    ContentType.Application.Json,
+                )
+            }
             apiPost("/responses") {
                 val call = this
                 if (!authorize(call, ApiScope.Inference, ApiRequestClass.Content)) return@apiPost
@@ -844,6 +924,7 @@ private val OPENAPI_DOCUMENT: String = Json.encodeToString(buildJsonObject {
             "/v1/chat/completions" to "post",
             "/v1/responses" to "post",
             "/v1/embeddings" to "post",
+            "/v1/tensor/inference" to "post",
             "/v1/rag/search" to "get",
             "/v1/tools" to "get",
             "/v1/tools/invoke" to "post",

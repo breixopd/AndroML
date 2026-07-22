@@ -1,10 +1,13 @@
 package dev.androml.app
 
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -78,6 +81,7 @@ import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
 import dev.androml.runtime.api.RuntimePackCatalog
+import dev.androml.runtime.api.TensorInput
 import dev.androml.optimizer.AutoOptimizer
 import java.util.Locale
 import java.util.UUID
@@ -258,7 +262,45 @@ private fun PlaygroundScreen(
     var isRunning by remember { mutableStateOf(false) }
     var runJob by remember { mutableStateOf<Job?>(null) }
     var selectedWorkload by remember { mutableStateOf(ModelWorkload.TextGeneration) }
+    var tensorInput by remember { mutableStateOf<TensorInput?>(null) }
+    var tensorInputLabel by remember { mutableStateOf<String?>(null) }
     var distributed by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                if (selectedWorkload == ModelWorkload.AudioClassification) {
+                    TensorPreprocessors.wav(stream)
+                } else {
+                    val bitmap = BitmapFactory.decodeStream(stream)
+                        ?: error("selected image could not be decoded")
+                    try {
+                        TensorPreprocessors.image(bitmap)
+                    } finally {
+                        bitmap.recycle()
+                    }
+                }
+            } ?: error("selected file could not be opened")
+        }.onSuccess { input ->
+            tensorInput = input
+            tensorInputLabel = if (selectedWorkload == ModelWorkload.AudioClassification) {
+                "16 kHz mono PCM16 WAV"
+            } else {
+                "224 × 224 RGB NHWC"
+            }
+            status = "Prepared ${input.elementCount} ${input.dataType.name} tensor"
+        }.onFailure { error ->
+            tensorInput = null
+            tensorInputLabel = null
+            status = error.message?.take(256) ?: "Media preprocessing failed"
+        }
+    }
+    LaunchedEffect(selectedWorkload) {
+        tensorInput = null
+        tensorInputLabel = null
+        if (selectedWorkload != ModelWorkload.TextGeneration) distributed = false
+    }
     val runnableFiles = remember(installedModelFiles, selectedWorkload) {
         installedModelFiles
             .filter {
@@ -408,6 +450,7 @@ private fun PlaygroundScreen(
                     prompt = prompt,
                     maxNewTokens = 256,
                     temperature = 0.7,
+                    tensorInput = tensorInput,
                 )
                 serviceClient.stream(session, request).collect { event ->
                     when (event) {
@@ -485,14 +528,34 @@ private fun PlaygroundScreen(
                             )
                         }
                     }
+                    listOf(
+                        listOf(ModelWorkload.ImageClassification, ModelWorkload.ObjectDetection),
+                        listOf(ModelWorkload.ImageSegmentation, ModelWorkload.AudioClassification),
+                    ).forEach { rowWorkloads ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            rowWorkloads.forEach { workload ->
+                                FilterChip(
+                                    selected = selectedWorkload == workload,
+                                    onClick = { selectedWorkload = workload },
+                                    label = {
+                                        Text(
+                                            when (workload) {
+                                                ModelWorkload.ImageClassification -> "Image class."
+                                                ModelWorkload.ObjectDetection -> "Detection"
+                                                ModelWorkload.ImageSegmentation -> "Segmentation"
+                                                ModelWorkload.AudioClassification -> "Audio class."
+                                                else -> workload.name
+                                            },
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(6.dp))
                     if (runnableFiles.isEmpty()) {
                         Text(
-                            if (selectedWorkload == ModelWorkload.TextGeneration) {
-                                "No verified text-generation model artifact is installed. Discover and verify one from Hugging Face first."
-                            } else {
-                                "No verified embedding model artifact is installed."
-                            },
+                            "No verified ${selectedWorkload.name} model artifact is installed. Discover and verify one from Hugging Face first.",
                         )
                     } else {
                         Text("Select a content-addressed model artifact:", style = MaterialTheme.typography.bodySmall)
@@ -545,24 +608,70 @@ private fun PlaygroundScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        if (selectedWorkload == ModelWorkload.TextGeneration) "Text generation"
-                        else "Text embedding",
+                        when (selectedWorkload) {
+                            ModelWorkload.TextGeneration -> "Text generation"
+                            ModelWorkload.TextEmbedding -> "Text embedding"
+                            ModelWorkload.AudioClassification -> "Audio classification"
+                            ModelWorkload.ImageClassification -> "Image classification"
+                            ModelWorkload.ObjectDetection -> "Object detection"
+                            ModelWorkload.ImageSegmentation -> "Image segmentation"
+                            else -> selectedWorkload.name
+                        },
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = prompt,
-                        onValueChange = { prompt = it.take(InferenceRequest.MAX_PROMPT_CHARS) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = {
-                            Text(if (selectedWorkload == ModelWorkload.TextGeneration) "Prompt" else "Text to embed")
-                        },
-                        minLines = 3,
-                    )
+                    if (selectedWorkload == ModelWorkload.TextGeneration ||
+                        selectedWorkload == ModelWorkload.TextEmbedding
+                    ) {
+                        OutlinedTextField(
+                            value = prompt,
+                            onValueChange = { prompt = it.take(InferenceRequest.MAX_PROMPT_CHARS) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text(if (selectedWorkload == ModelWorkload.TextGeneration) "Prompt" else "Text to embed")
+                            },
+                            minLines = 3,
+                        )
+                    } else {
+                        Button(
+                            onClick = {
+                                mediaPicker.launch(
+                                    if (selectedWorkload == ModelWorkload.AudioClassification) {
+                                        arrayOf("audio/wav", "audio/x-wav")
+                                    } else {
+                                        arrayOf("image/*")
+                                    },
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                when {
+                                    tensorInput != null -> "Replace input media"
+                                    selectedWorkload == ModelWorkload.AudioClassification -> "Choose WAV audio"
+                                    else -> "Choose image"
+                                },
+                            )
+                        }
+                        tensorInputLabel?.let { label ->
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "$label · ${tensorInput?.elementCount ?: 0} values",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Text(
+                            "Preprocessing is explicit and bounded: images become 224×224 RGB float32 [0,1]; WAV audio becomes mono 16 kHz float32.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = ::runPrompt,
-                        enabled = isRunning || optimizedWithBenchmarks.selected != null,
+                        enabled = isRunning || (optimizedWithBenchmarks.selected != null &&
+                            (selectedWorkload == ModelWorkload.TextGeneration ||
+                                selectedWorkload == ModelWorkload.TextEmbedding ||
+                                tensorInput != null)),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(

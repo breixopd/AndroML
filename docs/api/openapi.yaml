@@ -43,6 +43,15 @@ paths:
       operationId: createEmbedding
       responses:
         '200': { description: Embeddings }
+  /v1/tensor/inference:
+    post:
+      operationId: runTensorInference
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/TensorInferenceRequest' } }
+      responses:
+        '200': { description: Bounded numeric tensor output }
   /v1/rag/search:
     get:
       operationId: searchRag
@@ -115,6 +124,8 @@ paths:
     $ref: '#/paths/~1v1~1responses'
   /api/v1/embeddings:
     $ref: '#/paths/~1v1~1embeddings'
+  /api/v1/tensor/inference:
+    $ref: '#/paths/~1v1~1tensor~1inference'
   /api/v1/rag/search:
     $ref: '#/paths/~1v1~1rag~1search'
   /api/v1/workflows:
@@ -153,6 +164,15 @@ components:
         stream: { type: boolean, default: false }
         max_tokens: { type: integer, minimum: 1, maximum: 8192 }
         temperature: { type: number, minimum: 0, maximum: 2 }
+    TensorInferenceRequest:
+      type: object
+      required: [model, workload, data, shape, data_type]
+      properties:
+        model: { type: string, maxLength: 256 }
+        workload: { type: string, enum: [ImageClassification, ObjectDetection, ImageSegmentation, AudioClassification] }
+        data: { type: string, format: byte, description: Base64-encoded bounded tensor bytes }
+        shape: { type: array, items: { type: integer, format: int64, minimum: 1 }, maxItems: 8 }
+        data_type: { type: string, enum: [Float32, Int32, Int64, UInt8, Int8] }
     ResponsesRequest:
       type: object
       required: [model, input]
