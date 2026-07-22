@@ -1,0 +1,103 @@
+openapi: 3.1.0
+info:
+  title: AndroML local API
+  version: 1.0.0
+  description: >-
+    OpenAI-compatible inference plus guarded RAG, workflow, tools, agents, and
+    distributed-cluster controls exposed by the Android app.
+servers:
+  - url: https://127.0.0.1:8787
+    description: Loopback or mutually authenticated LAN listener
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      responses:
+        '200': { description: Healthy }
+  /v1/models:
+    get:
+      responses:
+        '200': { description: Installed runnable models }
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ChatCompletionRequest' } }
+      responses:
+        '200': { description: Completion or SSE stream }
+  /v1/responses:
+    post:
+      operationId: createResponse
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/ResponsesRequest' } }
+      responses:
+        '200': { description: Response or SSE stream }
+  /v1/embeddings:
+    post:
+      operationId: createEmbedding
+      responses:
+        '200': { description: Embeddings }
+  /v1/rag/search:
+    get:
+      operationId: searchRag
+      parameters:
+        - { name: collection_id, in: query, required: true, schema: { type: string } }
+        - { name: q, in: query, required: true, schema: { type: string } }
+        - { name: top_k, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 8 } }
+      responses:
+        '200': { description: Citation-bearing hybrid results }
+  /v1/workflows:
+    get:
+      responses:
+        '200': { description: Durable workflow definitions }
+  /v1/workflows/runs:
+    post:
+      responses:
+        '200': { description: Durable workflow run status }
+  /v1/tools:
+    get:
+      responses:
+        '200': { description: Allowlisted tools }
+  /v1/tools/invoke:
+    post:
+      responses:
+        '200': { description: Tool result }
+  /v1/agents:
+    get:
+      responses:
+        '200': { description: Agent definitions }
+  /v1/cluster:
+    get:
+      responses:
+        '200': { description: Local cluster status }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required: [model, messages]
+      properties:
+        model: { type: string }
+        messages: { type: array, items: { type: object } }
+        stream: { type: boolean, default: false }
+        max_tokens: { type: integer, minimum: 1, maximum: 8192 }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+    ResponsesRequest:
+      type: object
+      required: [model, input]
+      properties:
+        model: { type: string }
+        input: { type: string }
+        stream: { type: boolean, default: false }
+        max_output_tokens: { type: integer, minimum: 1, maximum: 8192 }
+        temperature: { type: number, minimum: 0, maximum: 2 }
