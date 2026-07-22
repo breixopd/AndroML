@@ -1275,20 +1275,6 @@ private fun StatusCard(title: String, value: String, detail: String) {
     }
 }
 
-@Composable
-private fun PlaceholderDestination(name: String, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(24.dp),
-    ) {
-        Text(name, style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(8.dp))
-        Text("This surface is reserved for the next implementation slice.")
-        Spacer(Modifier.width(1.dp))
-    }
-}
-
 @Preview(showBackground = true)
 @Composable
 private fun HomeScreenPreview() {
