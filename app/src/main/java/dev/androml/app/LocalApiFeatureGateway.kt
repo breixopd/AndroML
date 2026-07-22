@@ -118,10 +118,11 @@ class LocalApiFeatureGateway(
 
     override suspend fun clusterStatus(): ApiClusterStatus {
         val state = clusterController.currentState()
+        val nodeId = clusterController.localNodeId().value
         return when (state) {
-            ClusterControllerState.Disabled -> ApiClusterStatus(false, null, 0)
-            is ClusterControllerState.Running -> ApiClusterStatus(true, null, state.pairedPeerCount)
-            is ClusterControllerState.Failed -> ApiClusterStatus(false, null, 0)
+            ClusterControllerState.Disabled -> ApiClusterStatus(false, nodeId, 0)
+            is ClusterControllerState.Running -> ApiClusterStatus(true, nodeId, state.pairedPeerCount)
+            is ClusterControllerState.Failed -> ApiClusterStatus(false, nodeId, 0)
         }
     }
 }

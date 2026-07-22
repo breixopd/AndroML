@@ -113,6 +113,11 @@ class ClusterController(
     @Synchronized
     fun currentState(): ClusterControllerState = _state.value
 
+    suspend fun localNodeId(): PeerId = withContext(Dispatchers.IO) {
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        clusterNodeId(identity.fingerprint)
+    }
+
     /** Creates a short-lived QR/deep-link payload for onboarding another phone. */
     suspend fun createPairingInvite(host: String, port: Int): String = withContext(Dispatchers.IO) {
         val advertisedHost = host.trim()
