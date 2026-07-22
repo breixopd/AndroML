@@ -432,6 +432,26 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
+            apiPost("/agents/invoke") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@apiPost
+                val request = runCatching {
+                    val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
+                    ApiAgentInvocationRequest(
+                        agentId = root.string("agent_id"),
+                        prompt = root.string("prompt"),
+                    )
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                try {
+                    val response = features.invokeAgent(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
             apiGet("/cluster") {
                 val call = this
                 if (!authorize(call, ApiScope.Cluster, ApiRequestClass.ReadOnly)) return@apiGet
@@ -706,6 +726,13 @@ private fun ApiToolInvocationResponse.toJson() = buildJsonObject {
     approvalId?.let { put("approval_id", it) }
 }
 
+private fun ApiAgentInvocationResponse.toJson() = buildJsonObject {
+    put("status", status)
+    output?.let { put("output", it) }
+    error?.let { put("error", it) }
+    approvalId?.let { put("approval_id", it) }
+}
+
 private fun ApiClusterStatus.toJson() = buildJsonObject {
     put("enabled", enabled)
     nodeId?.let { put("node_id", it) }
@@ -789,6 +816,7 @@ private val OPENAPI_DOCUMENT: String = Json.encodeToString(buildJsonObject {
             "/v1/workflows" to "get",
             "/v1/workflows/runs" to "post",
             "/v1/agents" to "get",
+            "/v1/agents/invoke" to "post",
             "/v1/cluster" to "get",
             "/v1/audit/events" to "get",
         ).flatMap { (path, method) ->

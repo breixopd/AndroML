@@ -111,6 +111,30 @@ data class ApiAgentInfo(
     val displayName: String,
 )
 
+data class ApiAgentInvocationRequest(
+    val agentId: String,
+    val prompt: String,
+) {
+    init {
+        require(agentId.matches(Regex("[a-z0-9][a-z0-9._-]{0,63}"))) { "agent_id is invalid" }
+        require(prompt.isNotBlank() && prompt.length <= 64 * 1024) { "prompt is invalid" }
+    }
+}
+
+data class ApiAgentInvocationResponse(
+    val status: String,
+    val output: String? = null,
+    val error: String? = null,
+    val approvalId: String? = null,
+) {
+    init {
+        require(status.matches(Regex("[A-Za-z][A-Za-z0-9_-]{0,31}"))) { "agent status is invalid" }
+        require(output == null || output.length <= 256 * 1024) { "agent output is too large" }
+        require(error == null || error.length <= 512) { "agent error is too large" }
+        require(approvalId == null || approvalId.length in 1..128) { "approval ID is invalid" }
+    }
+}
+
 data class ApiClusterStatus(
     val enabled: Boolean,
     val nodeId: String?,
@@ -142,6 +166,8 @@ interface ApiFeatureGateway {
     suspend fun invokeTool(request: ApiToolInvocationRequest): ApiToolInvocationResponse = unavailable()
 
     suspend fun listAgents(): List<ApiAgentInfo> = unavailable()
+
+    suspend fun invokeAgent(request: ApiAgentInvocationRequest): ApiAgentInvocationResponse = unavailable()
 
     suspend fun clusterStatus(): ApiClusterStatus = unavailable()
 

@@ -72,6 +72,15 @@ paths:
     get:
       responses:
         '200': { description: Agent definitions }
+  /v1/agents/invoke:
+    post:
+      operationId: invokeAgent
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: '#/components/schemas/AgentInvocationRequest' } }
+      responses:
+        '200': { description: Agent result, failure, or approval request }
   /v1/cluster:
     get:
       responses:
@@ -100,6 +109,8 @@ paths:
     $ref: '#/paths/~1v1~1tools~1invoke'
   /api/v1/agents:
     $ref: '#/paths/~1v1~1agents'
+  /api/v1/agents/invoke:
+    $ref: '#/paths/~1v1~1agents~1invoke'
   /api/v1/cluster:
     $ref: '#/paths/~1v1~1cluster'
   /api/v1/audit/events:
@@ -129,3 +140,9 @@ components:
         stream: { type: boolean, default: false }
         max_output_tokens: { type: integer, minimum: 1, maximum: 8192 }
         temperature: { type: number, minimum: 0, maximum: 2 }
+    AgentInvocationRequest:
+      type: object
+      required: [agent_id, prompt]
+      properties:
+        agent_id: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }
+        prompt: { type: string, minLength: 1, maxLength: 65536 }

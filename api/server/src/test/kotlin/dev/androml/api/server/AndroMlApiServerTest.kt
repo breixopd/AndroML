@@ -34,6 +34,7 @@ class AndroMlApiServerTest {
     fun featureRoutesUseIndependentScopesAndReturnBoundedTypedResults() = testApplication {
         val ragKey = ApiKeyCodec.generate("rag", setOf(ApiScope.RagRead), nowEpochMillis = 1L)
         val toolKey = ApiKeyCodec.generate("tools", setOf(ApiScope.Tools), nowEpochMillis = 1L)
+        val agentKey = ApiKeyCodec.generate("agents", setOf(ApiScope.Agents), nowEpochMillis = 1L)
         val adminKey = ApiKeyCodec.generate("admin", setOf(ApiScope.Admin), nowEpochMillis = 1L)
         val featureGateway = object : ApiFeatureGateway {
             override suspend fun ragSearch(request: ApiRagSearchRequest): ApiRagSearchResponse =
@@ -46,10 +47,13 @@ class AndroMlApiServerTest {
             override suspend fun listAuditEvents(limit: Int): List<ApiAuditEvent> = listOf(
                 ApiAuditEvent("event-1", "tool.invocation", "device.info", "Read", "a".repeat(64), null, true, 1L),
             )
+
+            override suspend fun invokeAgent(request: ApiAgentInvocationRequest): ApiAgentInvocationResponse =
+                ApiAgentInvocationResponse("Completed", output = "agent:${request.prompt}")
         }
         val server = AndroMlApiServer(
             config = ApiServerConfig(),
-            apiKeys = { listOf(ragKey.record, toolKey.record, adminKey.record) },
+            apiKeys = { listOf(ragKey.record, toolKey.record, agentKey.record, adminKey.record) },
             models = { listOf("fake") },
             inference = emptyInferenceGateway(),
             features = featureGateway,
@@ -82,6 +86,14 @@ class AndroMlApiServerTest {
         }
         assertEquals(HttpStatusCode.OK, nativeTools.status)
         assertTrue(nativeTools.bodyAsText().contains("device.info"))
+
+        val agent = client.post("/api/v1/agents/invoke") {
+            header(HttpHeaders.Authorization, "Bearer ${agentKey.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"agent_id\":\"local-agent\",\"prompt\":\"hello\"}")
+        }
+        assertEquals(HttpStatusCode.OK, agent.status)
+        assertTrue(agent.bodyAsText().contains("agent:hello"))
 
         val audit = client.get("/api/v1/audit/events?limit=10") {
             header(HttpHeaders.Authorization, "Bearer ${adminKey.plaintextToken}")

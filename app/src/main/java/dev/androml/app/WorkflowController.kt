@@ -75,6 +75,13 @@ data class WorkflowRunSnapshot(
     val error: String? = null,
 )
 
+data class AgentInvocationSnapshot(
+    val status: String,
+    val output: String? = null,
+    val error: String? = null,
+    val approvalId: String? = null,
+)
+
 /** Connects durable workflow execution to local tools, installed models, RAG, and cluster routing. */
 class WorkflowController(
     private val definitionRepository: WorkflowDefinitionRepository,
@@ -254,6 +261,21 @@ class WorkflowController(
         )
     }
 
+    suspend fun invokeAgent(agentId: String, prompt: String): AgentInvocationSnapshot =
+        withContext(Dispatchers.IO) {
+            require(agentId == LOCAL_AGENT_KEY) { "agent is not installed" }
+            require(prompt.isNotBlank() && prompt.length <= 64 * 1024) { "agent prompt is invalid" }
+            val modelHash = catalogRepository.firstVerifiedArtifactFor(ModelWorkload.TextGeneration)
+                ?: throw IllegalStateException("an installed model is required for the local agent")
+            val result = executeLocalAgent(prompt, ContentHash.parse(modelHash.value))
+            AgentInvocationSnapshot(
+                status = result.status.name,
+                output = result.finalText,
+                error = result.safeError,
+                approvalId = result.pendingApproval?.approvalId,
+            )
+        }
+
     suspend fun hasAgentModel(): Boolean = withContext(Dispatchers.IO) {
         catalogRepository.firstVerifiedArtifactFor(ModelWorkload.TextGeneration) != null
     }
@@ -396,38 +418,7 @@ class WorkflowController(
                 ?: throw WorkflowNodeExecutionException("an installed model is required for the local agent")
             val prompt = value as? WorkflowValue.Text
                 ?: throw WorkflowNodeExecutionException("agent workflow node requires text input")
-            val definition = AgentDefinition(
-                id = AgentId.parse(LOCAL_AGENT_KEY),
-                displayName = "Local AndroML agent",
-                systemPrompt = agentSystemPrompt(),
-                allowedTools = tools.descriptors().map { it.id }.toSet(),
-            )
-                val agent = AgentExecutor(
-                    toolRegistry = tools,
-                    auditSink = auditSink,
-                    model = AgentModel { _, transcript ->
-                    val transcriptText = transcriptText(transcript)
-                    val stage = clusterController.executeBestWorkflowStage(
-                        ClusterWorkflowStageTask(
-                            stageKind = MODEL_STAGE,
-                            stageKey = hash.value,
-                            modelHash = hash,
-                            inputPayload = WorkflowValueCodec.encode(WorkflowValue.Text(transcriptText)),
-                        ),
-                    )
-                    val output = (WorkflowValueCodec.decode(stage.result.outputPayload) as? WorkflowValue.Text)?.value
-                        ?: throw WorkflowNodeExecutionException("agent model returned a non-text value")
-                    try {
-                        AgentModelOutputParser.parse(output)
-                    } catch (_: IllegalArgumentException) {
-                        throw WorkflowNodeExecutionException("agent model emitted an invalid tool call")
-                    }
-                },
-            ).run(
-                definition = definition,
-                prompt = prompt.value,
-                grantedScopes = allToolScopes(),
-            )
+            val agent = executeLocalAgent(prompt.value, hash)
             val finalText = agent.finalText
                 ?: throw WorkflowNodeExecutionException(agent.safeError ?: "agent execution did not complete")
             WorkflowValue.Text(finalText)
@@ -474,6 +465,39 @@ class WorkflowController(
             else WorkflowApprovalDecision.Pending
         },
     )
+
+    private suspend fun executeLocalAgent(prompt: String, hash: ContentHash) = AgentExecutor(
+        toolRegistry = tools,
+        auditSink = auditSink,
+        model = agentModel(hash),
+    ).run(
+        definition = AgentDefinition(
+            id = AgentId.parse(LOCAL_AGENT_KEY),
+            displayName = "Local AndroML agent",
+            systemPrompt = agentSystemPrompt(),
+            allowedTools = tools.descriptors().map { it.id }.toSet(),
+        ),
+        prompt = prompt,
+        grantedScopes = allToolScopes(),
+    )
+
+    private fun agentModel(hash: ContentHash): AgentModel = AgentModel { _, transcript ->
+        val stage = clusterController.executeBestWorkflowStage(
+            ClusterWorkflowStageTask(
+                stageKind = MODEL_STAGE,
+                stageKey = hash.value,
+                modelHash = hash,
+                inputPayload = WorkflowValueCodec.encode(WorkflowValue.Text(transcriptText(transcript))),
+            ),
+        )
+        val output = (WorkflowValueCodec.decode(stage.result.outputPayload) as? WorkflowValue.Text)?.value
+            ?: throw WorkflowNodeExecutionException("agent model returned a non-text value")
+        try {
+            AgentModelOutputParser.parse(output)
+        } catch (_: IllegalArgumentException) {
+            throw WorkflowNodeExecutionException("agent model emitted an invalid tool call")
+        }
+    }
 
     private fun transcriptText(transcript: AgentTranscript): String = transcript.messages.joinToString("\n") { message ->
         when (message) {

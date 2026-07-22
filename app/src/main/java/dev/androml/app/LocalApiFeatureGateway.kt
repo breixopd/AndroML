@@ -1,6 +1,8 @@
 package dev.androml.app
 
 import dev.androml.api.server.ApiAgentInfo
+import dev.androml.api.server.ApiAgentInvocationRequest
+import dev.androml.api.server.ApiAgentInvocationResponse
 import dev.androml.api.server.ApiAuditEvent
 import dev.androml.api.server.ApiClusterStatus
 import dev.androml.api.server.ApiFeatureGateway
@@ -117,6 +119,16 @@ class LocalApiFeatureGateway(
         listOf(ApiAgentInfo(WorkflowController.LOCAL_AGENT_KEY, "Local AndroML agent"))
     } else {
         emptyList()
+    }
+
+    override suspend fun invokeAgent(request: ApiAgentInvocationRequest): ApiAgentInvocationResponse {
+        val result = workflowController.invokeAgent(request.agentId, request.prompt)
+        return ApiAgentInvocationResponse(
+            status = result.status,
+            output = result.output,
+            error = result.error,
+            approvalId = result.approvalId,
+        )
     }
 
     override suspend fun clusterStatus(): ApiClusterStatus {
