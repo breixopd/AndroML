@@ -61,6 +61,7 @@ import dev.androml.cluster.core.ContentHash
 import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.DeviceProfile
+import dev.androml.core.model.AppSettings
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.model.ModelWorkload
@@ -111,6 +112,9 @@ private fun AndroMLApp() {
     val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "Workflows", "API", "Cluster", "Settings")
     var selectedDestination by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
+    var appSettings by remember(context) {
+        mutableStateOf(AppSettingsStore.load(context))
+    }
     val application = context.applicationContext as AndroMLApplication
     val deviceProfile = remember(context) {
         AndroidDeviceProfileCollector(context.applicationContext).collect()
@@ -173,6 +177,7 @@ private fun AndroMLApp() {
                 installedModelFiles = catalogFiles,
                 artifactStore = application.artifactStore,
                 benchmarkRepository = application.runtimeBenchmarkRepository,
+                settings = appSettings,
             )
         } else if (selectedDestination == 2) {
             DiscoverScreen(
@@ -222,11 +227,15 @@ private fun AndroMLApp() {
         } else {
             SettingsScreen(
                 modifier = Modifier.padding(paddingValues),
-                context = context,
                 deviceProfile = deviceProfile,
                 releasePolicy = ReleasePolicy.testPeriod(),
                 runtimePacks = RuntimePackCatalog.production,
                 apiState = apiState,
+                settings = appSettings,
+                onSettingsChanged = { next ->
+                    appSettings = next
+                    AppSettingsStore.save(context, next)
+                },
             )
         }
     }
@@ -241,6 +250,7 @@ private fun PlaygroundScreen(
     installedModelFiles: List<ModelFileEntity>,
     artifactStore: FileArtifactStore,
     benchmarkRepository: dev.androml.core.database.RuntimeBenchmarkRepository,
+    settings: AppSettings,
 ) {
     var prompt by remember { mutableStateOf("Say hello from the isolated runtime.") }
     var output by remember { mutableStateOf("") }
@@ -278,9 +288,22 @@ private fun PlaygroundScreen(
             contextTokens = 2048,
         )
     }
-    val optimization = remember(deviceProfile, selectedFile?.artifactSha256, selectedFile?.sizeBytes, selectedWorkload) {
+    val optimizationDevice = remember(deviceProfile, settings.thermalGuard) {
+        if (settings.thermalGuard) {
+            deviceProfile
+        } else {
+            deviceProfile.copy(thermalStatus = dev.androml.core.model.ThermalStatus.Nominal)
+        }
+    }
+    val optimization = remember(
+        optimizationDevice,
+        selectedFile?.artifactSha256,
+        selectedFile?.sizeBytes,
+        selectedWorkload,
+        settings.autoOptimize,
+    ) {
         optimizer.select(
-            device = deviceProfile,
+            device = optimizationDevice,
             model = model,
             runtimes = compatibleRuntimeDescriptors,
         )
@@ -306,10 +329,10 @@ private fun PlaygroundScreen(
             optimization
         } else {
             optimizer.select(
-                device = deviceProfile,
+                device = optimizationDevice,
                 model = model,
                 runtimes = compatibleRuntimeDescriptors,
-                benchmarks = benchmarkObservations,
+                benchmarks = if (settings.autoOptimize) benchmarkObservations else emptyList(),
             )
         }
     }
@@ -501,7 +524,7 @@ private fun PlaygroundScreen(
                     Spacer(Modifier.height(8.dp))
                     Text(
                         optimizedWithBenchmarks.selected?.let { candidate ->
-                            "Auto-pick: ${candidate.descriptor.id.value} · ${candidate.descriptor.acceleration.name.lowercase(Locale.ROOT)} · score ${"%.1f".format(Locale.ROOT, candidate.score ?: 0.0)}"
+                            "${if (settings.autoOptimize) "Auto-pick" else "Runtime default"}: ${candidate.descriptor.id.value} · ${candidate.descriptor.acceleration.name.lowercase(Locale.ROOT)} · score ${"%.1f".format(Locale.ROOT, candidate.score ?: 0.0)}"
                         } ?: "Auto-pick: no compatible runtime can be proven on this device",
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -546,7 +569,7 @@ private fun PlaygroundScreen(
                             when {
                                 isRunning -> "Stop"
                                 optimizedWithBenchmarks.selected == null -> "No compatible runtime"
-                                else -> "Run with auto-optimisation"
+                                else -> if (settings.autoOptimize) "Run with auto-optimisation" else "Run with runtime defaults"
                             },
                         )
                     }

@@ -22,6 +22,8 @@ import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.ModelFormatClassifier
+import dev.androml.core.model.AppSettings
+import dev.androml.core.model.ThermalStatus
 import dev.androml.core.network.HuggingFaceArtifactDownloader
 import dev.androml.core.network.HuggingFaceModelClient
 import dev.androml.core.security.AndroidKeystoreSecretStore
@@ -40,6 +42,8 @@ import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
 import dev.androml.runtime.llamacpp.LlamaCppRuntimeAvailability
 import dev.androml.optimizer.AutoOptimizer
+import dev.androml.optimizer.OptimizationPolicy
+import dev.androml.runtime.api.AccelerationBackend
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -190,6 +194,7 @@ class AndroMLApplication : Application() {
             },
             apiTlsIdentityStore = apiTlsIdentityStore,
             clientCertificateStore = apiClientCertificateStore,
+            settingsProvider = { AppSettingsStore.load(this@AndroMLApplication) },
             features = LocalApiFeatureGateway(
                 workflowController = workflowController,
                 workflowRepository = workflowDefinitionRepository,
@@ -233,6 +238,7 @@ class LocalApiController(
     private val deviceProfileProvider: () -> dev.androml.core.model.DeviceProfile,
     private val apiTlsIdentityStore: TlsIdentityStore,
     private val clientCertificateStore: ApiClientCertificateStore,
+    private val settingsProvider: () -> AppSettings,
     private val features: ApiFeatureGateway,
 ) {
     private var server: AndroMlApiServer? = null
@@ -290,6 +296,7 @@ class LocalApiController(
                 catalogRepository = catalogRepository,
                 artifactStore = artifactStore,
                 deviceProfileProvider = deviceProfileProvider,
+                settingsProvider = settingsProvider,
             ),
             onKeyUsed = { id ->
                 try {
@@ -338,6 +345,7 @@ private class IsolatedRuntimeApiGateway(
     private val catalogRepository: ModelCatalogRepository,
     private val artifactStore: FileArtifactStore,
     private val deviceProfileProvider: () -> dev.androml.core.model.DeviceProfile,
+    private val settingsProvider: () -> AppSettings,
 ) : ApiInferenceGateway {
     private val optimizer = AutoOptimizer()
 
@@ -458,10 +466,24 @@ private class IsolatedRuntimeApiGateway(
     ): RuntimeConfiguration {
         val descriptor = RuntimePackCatalog.find(runtimeId)?.takeIf { it.usable }?.descriptor
             ?: throw IllegalArgumentException("requested runtime is not bundled")
+        val settings = settingsProvider()
+        val effectiveDevice = if (settings.thermalGuard) {
+            device
+        } else {
+            device.copy(thermalStatus = ThermalStatus.Nominal)
+        }
         val result = optimizer.select(
-            device = device,
+            device = effectiveDevice,
             model = model,
             runtimes = listOf(descriptor),
+            policy = if (settings.autoOptimize) {
+                OptimizationPolicy()
+            } else {
+                OptimizationPolicy(
+                    preferredBackends = listOf(AccelerationBackend.Cpu),
+                    maxCpuThreads = effectiveDevice.cpuCoreCount.coerceIn(1, 8),
+                )
+            },
         )
         val configuration = result.configuration
             ?: throw IllegalStateException("device cannot safely run the requested model")

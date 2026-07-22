@@ -17,10 +17,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -32,34 +28,15 @@ import dev.androml.runtime.api.RuntimePackInfo
 @Composable
 fun SettingsScreen(
     modifier: Modifier = Modifier,
-    context: Context,
     deviceProfile: DeviceProfile,
     releasePolicy: ReleasePolicy,
     runtimePacks: List<RuntimePackInfo>,
     apiState: LocalApiState,
+    settings: AppSettings,
+    onSettingsChanged: (AppSettings) -> Unit,
 ) {
-    val preferences = remember(context) {
-        context.getSharedPreferences(SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
-    }
-    var settings by remember {
-        mutableStateOf(
-            AppSettings(
-                expertMode = preferences.getBoolean(KEY_EXPERT_MODE, true),
-                autoOptimize = preferences.getBoolean(KEY_AUTO_OPTIMIZE, true),
-                allowBackgroundDownloads = preferences.getBoolean(KEY_BACKGROUND_DOWNLOADS, true),
-                thermalGuard = preferences.getBoolean(KEY_THERMAL_GUARD, true),
-            ),
-        )
-    }
-
     fun update(next: AppSettings) {
-        settings = next
-        preferences.edit()
-            .putBoolean(KEY_EXPERT_MODE, next.expertMode)
-            .putBoolean(KEY_AUTO_OPTIMIZE, next.autoOptimize)
-            .putBoolean(KEY_BACKGROUND_DOWNLOADS, next.allowBackgroundDownloads)
-            .putBoolean(KEY_THERMAL_GUARD, next.thermalGuard)
-            .apply()
+        onSettingsChanged(next)
     }
 
     LazyColumn(
@@ -172,8 +149,29 @@ private fun apiStateLabel(state: LocalApiState): String = when (state) {
     is LocalApiState.Failed -> "failed"
 }
 
-private const val SETTINGS_PREFERENCES = "androml-settings"
-private const val KEY_EXPERT_MODE = "expert_mode"
-private const val KEY_AUTO_OPTIMIZE = "auto_optimize"
-private const val KEY_BACKGROUND_DOWNLOADS = "background_downloads"
-private const val KEY_THERMAL_GUARD = "thermal_guard"
+internal object AppSettingsStore {
+    private const val SETTINGS_PREFERENCES = "androml-settings"
+    private const val KEY_EXPERT_MODE = "expert_mode"
+    private const val KEY_AUTO_OPTIMIZE = "auto_optimize"
+    private const val KEY_BACKGROUND_DOWNLOADS = "background_downloads"
+    private const val KEY_THERMAL_GUARD = "thermal_guard"
+
+    fun load(context: Context): AppSettings {
+        val preferences = context.getSharedPreferences(SETTINGS_PREFERENCES, Context.MODE_PRIVATE)
+        return AppSettings(
+            expertMode = preferences.getBoolean(KEY_EXPERT_MODE, true),
+            autoOptimize = preferences.getBoolean(KEY_AUTO_OPTIMIZE, true),
+            allowBackgroundDownloads = preferences.getBoolean(KEY_BACKGROUND_DOWNLOADS, true),
+            thermalGuard = preferences.getBoolean(KEY_THERMAL_GUARD, true),
+        )
+    }
+
+    fun save(context: Context, settings: AppSettings) {
+        context.getSharedPreferences(SETTINGS_PREFERENCES, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_EXPERT_MODE, settings.expertMode)
+            .putBoolean(KEY_AUTO_OPTIMIZE, settings.autoOptimize)
+            .putBoolean(KEY_BACKGROUND_DOWNLOADS, settings.allowBackgroundDownloads)
+            .putBoolean(KEY_THERMAL_GUARD, settings.thermalGuard)
+            .apply()
+    }
+}
