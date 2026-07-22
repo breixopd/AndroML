@@ -13,6 +13,7 @@ import dev.androml.core.database.WorkflowDefinitionRepository
 import dev.androml.core.database.WorkflowEventDao
 import dev.androml.core.database.WorkflowCheckpointDao
 import dev.androml.core.model.DeviceProfile
+import dev.androml.core.model.ModelWorkload
 import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.tools.ToolDescriptor
@@ -108,7 +109,7 @@ class WorkflowController(
     }
 
     suspend fun hasAgentModel(): Boolean = withContext(Dispatchers.IO) {
-        catalogRepository.installedArtifactHashes().isNotEmpty()
+        catalogRepository.firstVerifiedArtifactFor(ModelWorkload.TextGeneration) != null
     }
 
     suspend fun save(definition: WorkflowDefinition) = withContext(Dispatchers.IO) {
@@ -154,7 +155,7 @@ class WorkflowController(
     ): WorkflowRunSnapshot = withContext(Dispatchers.IO) {
         definitionRepository.save(definition)
         val installedModels = catalogRepository.installedArtifactHashes().map(ContentHash::value).toSet()
-        val modelHash = installedModels.firstOrNull()
+        val modelHash = catalogRepository.firstVerifiedArtifactFor(ModelWorkload.TextGeneration)?.value
         val approvalKey = ApprovalKey(runId, null)
         val executor = WorkflowExecutor(
             eventStore = eventStore,
@@ -196,7 +197,7 @@ class WorkflowController(
             availableTools = tools.descriptors().associateBy { it.id },
             availableModels = installedModels,
             availableAgents = if (installedModels.isEmpty()) emptySet() else setOf(LOCAL_AGENT_KEY),
-            runners = runners(installedModels.firstOrNull(), approvalKey),
+            runners = runners(catalogRepository.firstVerifiedArtifactFor(ModelWorkload.TextGeneration)?.value, approvalKey),
         )
         val result = executor.execute(runId, definition, input)
         WorkflowRunSnapshot(

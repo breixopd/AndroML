@@ -3,6 +3,8 @@ package dev.androml.core.database
 import dev.androml.cluster.core.ContentHash
 import dev.androml.core.model.HuggingFaceModelReference
 import dev.androml.core.model.HuggingFaceRepositoryMetadata
+import dev.androml.core.model.ModelFormatClassifier
+import dev.androml.core.model.ModelWorkload
 import kotlinx.coroutines.flow.Flow
 
 class ModelCatalogRepository(
@@ -39,6 +41,11 @@ class ModelCatalogRepository(
     suspend fun installedArtifactHashes(): Set<ContentHash> = dao.listVerifiedArtifactHashes()
         .map(ContentHash::parse)
         .toSet()
+
+    suspend fun firstVerifiedArtifactFor(workload: ModelWorkload): ContentHash? = dao.listVerifiedFiles()
+        .firstOrNull { ModelFormatClassifier.supports(it.path, workload) }
+        ?.artifactSha256
+        ?.let(ContentHash::parse)
 
     suspend fun runnableModelKeys(): List<String> = dao.listRunnableModelKeys()
 

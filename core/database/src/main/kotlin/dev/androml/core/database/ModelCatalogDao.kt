@@ -36,6 +36,9 @@ abstract class ModelCatalogDao {
     @Query("SELECT artifactSha256 FROM model_files WHERE artifactSha256 IS NOT NULL")
     abstract suspend fun listVerifiedArtifactHashes(): List<String>
 
+    @Query("SELECT * FROM model_files WHERE artifactSha256 IS NOT NULL ORDER BY downloadedAtEpochMillis DESC, path ASC")
+    abstract suspend fun listVerifiedFiles(): List<ModelFileEntity>
+
     @Query(
         "SELECT DISTINCT modelId || '@' || revision FROM model_files " +
             "WHERE artifactSha256 IS NOT NULL AND (path LIKE '%.litertlm' OR path LIKE '%.tflite' OR path LIKE '%.onnx' OR path LIKE '%.ort' OR path LIKE '%.pte') " +
