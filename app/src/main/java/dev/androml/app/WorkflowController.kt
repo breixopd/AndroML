@@ -4,6 +4,7 @@ import dev.androml.cluster.core.ClusterWorkflowStageTask
 import dev.androml.cluster.core.ClusterInferenceTask
 import dev.androml.cluster.core.ContentHash
 import dev.androml.core.agents.AgentDefinition
+import dev.androml.core.agents.AgentContinuation
 import dev.androml.core.agents.AgentExecutor
 import dev.androml.core.agents.AgentId
 import dev.androml.core.agents.AgentMessage
@@ -20,6 +21,8 @@ import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.tools.ToolDescriptor
+import dev.androml.core.tools.ToolApproval
+import dev.androml.core.tools.ToolAuditEvent
 import dev.androml.core.tools.ToolExecutionContext
 import dev.androml.core.tools.ToolExecutionOutcome
 import dev.androml.core.tools.ToolExecutor
@@ -64,6 +67,7 @@ import kotlinx.serialization.json.put
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.ConcurrentHashMap
 
 data class WorkflowRunSnapshot(
     val runId: RunId,
@@ -94,6 +98,8 @@ class WorkflowController(
 ) {
     private val _lastRun = MutableStateFlow<WorkflowRunSnapshot?>(null)
     val lastRun: StateFlow<WorkflowRunSnapshot?> = _lastRun.asStateFlow()
+    private val pendingToolApprovals = ConcurrentHashMap<String, PendingToolApproval>()
+    private val pendingAgentApprovals = ConcurrentHashMap<String, PendingAgentApproval>()
 
     private val tools = ToolRegistry().also { registry ->
         registry.register(
@@ -252,13 +258,38 @@ class WorkflowController(
         toolId: ToolId,
         arguments: JsonObject,
     ): ToolExecutionOutcome = withContext(Dispatchers.IO) {
-        ToolExecutor(tools, auditSink = auditSink).execute(
+        val outcome = ToolExecutor(tools, auditSink = auditSink).execute(
             toolId = toolId,
             arguments = arguments,
             context = ToolExecutionContext(
                 grantedScopes = tools.descriptors().flatMap { it.requiredScopes }.toSet(),
             ),
         )
+        if (outcome is ToolExecutionOutcome.ApprovalRequired) {
+            pendingToolApprovals[outcome.approval.approvalId] = PendingToolApproval(
+                toolId = toolId,
+                arguments = arguments,
+                approval = outcome.approval,
+            )
+        }
+        outcome
+    }
+
+    suspend fun approveTool(approvalId: String): ToolExecutionOutcome = withContext(Dispatchers.IO) {
+        val pending = pendingToolApprovals.remove(approvalId)
+            ?: return@withContext unknownApprovalOutcome()
+        val outcome = ToolExecutor(tools, auditSink = auditSink).execute(
+            toolId = pending.toolId,
+            arguments = pending.arguments,
+            context = ToolExecutionContext(
+                grantedScopes = tools.descriptors().flatMap { it.requiredScopes }.toSet(),
+            ),
+            approval = pending.approval,
+        )
+        if (outcome is ToolExecutionOutcome.ApprovalRequired) {
+            pendingToolApprovals[outcome.approval.approvalId] = pending.copy(approval = outcome.approval)
+        }
+        outcome
     }
 
     suspend fun invokeAgent(agentId: String, prompt: String): AgentInvocationSnapshot =
@@ -268,6 +299,7 @@ class WorkflowController(
             val modelHash = catalogRepository.firstVerifiedArtifactFor(ModelWorkload.TextGeneration)
                 ?: throw IllegalStateException("an installed model is required for the local agent")
             val result = executeLocalAgent(prompt, ContentHash.parse(modelHash.value))
+            rememberPendingAgent(ContentHash.parse(modelHash.value), result)
             AgentInvocationSnapshot(
                 status = result.status.name,
                 output = result.finalText,
@@ -275,6 +307,27 @@ class WorkflowController(
                 approvalId = result.pendingApproval?.approvalId,
             )
         }
+
+    suspend fun approveAgent(approvalId: String): AgentInvocationSnapshot = withContext(Dispatchers.IO) {
+        val pending = pendingAgentApprovals.remove(approvalId)
+            ?: return@withContext AgentInvocationSnapshot(
+                status = "Failed",
+                error = "agent approval is unknown or already consumed",
+            )
+        val result = executeLocalAgent(
+            prompt = "resume",
+            hash = pending.modelHash,
+            continuation = pending.continuation,
+            approval = pending.approval,
+        )
+        rememberPendingAgent(pending.modelHash, result)
+        AgentInvocationSnapshot(
+            status = result.status.name,
+            output = result.finalText,
+            error = result.safeError,
+            approvalId = result.pendingApproval?.approvalId,
+        )
+    }
 
     suspend fun hasAgentModel(): Boolean = withContext(Dispatchers.IO) {
         catalogRepository.firstVerifiedArtifactFor(ModelWorkload.TextGeneration) != null
@@ -466,7 +519,12 @@ class WorkflowController(
         },
     )
 
-    private suspend fun executeLocalAgent(prompt: String, hash: ContentHash) = AgentExecutor(
+    private suspend fun executeLocalAgent(
+        prompt: String,
+        hash: ContentHash,
+        continuation: AgentContinuation? = null,
+        approval: ToolApproval? = null,
+    ) = AgentExecutor(
         toolRegistry = tools,
         auditSink = auditSink,
         model = agentModel(hash),
@@ -479,6 +537,8 @@ class WorkflowController(
         ),
         prompt = prompt,
         grantedScopes = allToolScopes(),
+        continuation = continuation,
+        approval = approval,
     )
 
     private fun agentModel(hash: ContentHash): AgentModel = AgentModel { _, transcript ->
@@ -536,6 +596,44 @@ class WorkflowController(
         val runId: RunId,
         val nodeId: NodeId?,
     )
+
+    private data class PendingToolApproval(
+        val toolId: ToolId,
+        val arguments: JsonObject,
+        val approval: ToolApproval,
+    )
+
+    private data class PendingAgentApproval(
+        val modelHash: ContentHash,
+        val continuation: AgentContinuation,
+        val approval: ToolApproval,
+    )
+
+    private fun rememberPendingAgent(
+        modelHash: ContentHash,
+        result: dev.androml.core.agents.AgentRunResult,
+    ) {
+        val approval = result.pendingApproval ?: return
+        val continuation = result.continuation ?: return
+        pendingAgentApprovals[approval.approvalId] = PendingAgentApproval(
+            modelHash = modelHash,
+            continuation = continuation,
+            approval = approval,
+        )
+    }
+
+    private fun unknownApprovalOutcome(): ToolExecutionOutcome.Denied =
+        ToolExecutionOutcome.Denied(
+            reason = "tool approval is unknown or already consumed",
+            audit = ToolAuditEvent(
+                eventType = "tool.approval",
+                toolId = ToolId.parse("approval.invalid"),
+                sideEffect = ToolSideEffect.Read,
+                argumentHash = "0".repeat(64),
+                success = false,
+                occurredAtEpochMillis = System.currentTimeMillis(),
+            ),
+        )
 
     companion object {
         const val LOCAL_AGENT_KEY = "local-agent"

@@ -106,6 +106,14 @@ data class ApiToolInvocationResponse(
     val approvalId: String? = null,
 )
 
+data class ApiToolApprovalRequest(
+    val approvalId: String,
+) {
+    init {
+        require(approvalId.matches(Regex("[a-f0-9-]{16,64}"))) { "approval_id is invalid" }
+    }
+}
+
 data class ApiAgentInfo(
     val id: String,
     val displayName: String,
@@ -141,6 +149,14 @@ data class ApiClusterStatus(
     val pairedPeerCount: Int,
 )
 
+data class ApiAgentApprovalRequest(
+    val approvalId: String,
+) {
+    init {
+        require(approvalId.matches(Regex("[a-f0-9-]{16,64}"))) { "approval_id is invalid" }
+    }
+}
+
 data class ApiAuditEvent(
     val eventId: String,
     val eventType: String,
@@ -165,9 +181,13 @@ interface ApiFeatureGateway {
 
     suspend fun invokeTool(request: ApiToolInvocationRequest): ApiToolInvocationResponse = unavailable()
 
+    suspend fun approveTool(request: ApiToolApprovalRequest): ApiToolInvocationResponse = unavailable()
+
     suspend fun listAgents(): List<ApiAgentInfo> = unavailable()
 
     suspend fun invokeAgent(request: ApiAgentInvocationRequest): ApiAgentInvocationResponse = unavailable()
+
+    suspend fun approveAgent(request: ApiAgentApprovalRequest): ApiAgentInvocationResponse = unavailable()
 
     suspend fun clusterStatus(): ApiClusterStatus = unavailable()
 

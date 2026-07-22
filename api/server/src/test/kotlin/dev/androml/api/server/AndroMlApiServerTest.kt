@@ -24,6 +24,7 @@ import javax.net.ssl.HttpsURLConnection
 import java.net.URL
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -50,6 +51,14 @@ class AndroMlApiServerTest {
 
             override suspend fun invokeAgent(request: ApiAgentInvocationRequest): ApiAgentInvocationResponse =
                 ApiAgentInvocationResponse("Completed", output = "agent:${request.prompt}")
+
+            override suspend fun approveTool(request: ApiToolApprovalRequest): ApiToolInvocationResponse =
+                ApiToolInvocationResponse("Completed", result = kotlinx.serialization.json.buildJsonObject {
+                    put("approved", true)
+                })
+
+            override suspend fun approveAgent(request: ApiAgentApprovalRequest): ApiAgentInvocationResponse =
+                ApiAgentInvocationResponse("Completed", output = "agent-approved")
         }
         val server = AndroMlApiServer(
             config = ApiServerConfig(),
@@ -94,6 +103,22 @@ class AndroMlApiServerTest {
         }
         assertEquals(HttpStatusCode.OK, agent.status)
         assertTrue(agent.bodyAsText().contains("agent:hello"))
+
+        val toolApproval = client.post("/v1/tools/approve") {
+            header(HttpHeaders.Authorization, "Bearer ${toolKey.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"approval_id\":\"${"a".repeat(32)}\"}")
+        }
+        assertEquals(HttpStatusCode.OK, toolApproval.status)
+        assertTrue(toolApproval.bodyAsText().contains("approved"))
+
+        val agentApproval = client.post("/api/v1/agents/approve") {
+            header(HttpHeaders.Authorization, "Bearer ${agentKey.plaintextToken}")
+            contentType(ContentType.Application.Json)
+            setBody("{\"approval_id\":\"${"b".repeat(32)}\"}")
+        }
+        assertEquals(HttpStatusCode.OK, agentApproval.status)
+        assertTrue(agentApproval.bodyAsText().contains("agent-approved"))
 
         val audit = client.get("/api/v1/audit/events?limit=10") {
             header(HttpHeaders.Authorization, "Bearer ${adminKey.plaintextToken}")

@@ -412,6 +412,23 @@ class AndroMlApiServer(
                     call.respondApiFeatureError(error)
                 }
             }
+            apiPost("/tools/approve") {
+                val call = this
+                if (!authorize(call, ApiScope.Tools, ApiRequestClass.Mutating)) return@apiPost
+                val request = runCatching {
+                    val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
+                    ApiToolApprovalRequest(approvalId = root.string("approval_id"))
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                try {
+                    val response = features.approveTool(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
             apiGet("/agents") {
                 val call = this
                 if (!authorize(call, ApiScope.Agents, ApiRequestClass.ReadOnly)) return@apiGet
@@ -447,6 +464,23 @@ class AndroMlApiServer(
                 }
                 try {
                     val response = features.invokeAgent(request)
+                    call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
+                } catch (error: Throwable) {
+                    call.respondApiFeatureError(error)
+                }
+            }
+            apiPost("/agents/approve") {
+                val call = this
+                if (!authorize(call, ApiScope.Agents, ApiRequestClass.Mutating)) return@apiPost
+                val request = runCatching {
+                    val root = call.receiveBoundedJson(config.maxRequestBodyBytes)
+                    ApiAgentApprovalRequest(approvalId = root.string("approval_id"))
+                }.getOrElse { error ->
+                    call.respondApiFeatureError(error)
+                    return@apiPost
+                }
+                try {
+                    val response = features.approveAgent(request)
                     call.respondText(Json.encodeToString(response.toJson()), ContentType.Application.Json)
                 } catch (error: Throwable) {
                     call.respondApiFeatureError(error)
@@ -813,10 +847,12 @@ private val OPENAPI_DOCUMENT: String = Json.encodeToString(buildJsonObject {
             "/v1/rag/search" to "get",
             "/v1/tools" to "get",
             "/v1/tools/invoke" to "post",
+            "/v1/tools/approve" to "post",
             "/v1/workflows" to "get",
             "/v1/workflows/runs" to "post",
             "/v1/agents" to "get",
             "/v1/agents/invoke" to "post",
+            "/v1/agents/approve" to "post",
             "/v1/cluster" to "get",
             "/v1/audit/events" to "get",
         ).flatMap { (path, method) ->
