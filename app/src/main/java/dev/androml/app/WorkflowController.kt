@@ -1,6 +1,7 @@
 package dev.androml.app
 
 import dev.androml.cluster.core.ClusterWorkflowStageTask
+import dev.androml.cluster.core.ClusterInferenceTask
 import dev.androml.cluster.core.ContentHash
 import dev.androml.core.agents.AgentDefinition
 import dev.androml.core.agents.AgentExecutor
@@ -14,6 +15,7 @@ import dev.androml.core.database.WorkflowEventDao
 import dev.androml.core.database.WorkflowCheckpointDao
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ModelWorkload
+import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.tools.ToolDescriptor
@@ -22,10 +24,13 @@ import dev.androml.core.tools.ToolExecutionOutcome
 import dev.androml.core.tools.ToolExecutor
 import dev.androml.core.tools.ToolHandler
 import dev.androml.core.tools.ToolId
-import dev.androml.core.tools.ToolInputSchema
-import dev.androml.core.tools.ToolRegistry
+import dev.androml.core.tools.ToolProperty
 import dev.androml.core.tools.ToolScope
 import dev.androml.core.tools.ToolSideEffect
+import dev.androml.core.tools.ToolInputSchema
+import dev.androml.core.tools.ToolValueType
+import dev.androml.core.tools.SafeCalculator
+import dev.androml.core.tools.ToolRegistry
 import dev.androml.core.workflow.InputNode
 import dev.androml.core.workflow.ModelNode
 import dev.androml.core.workflow.NodeId
@@ -52,6 +57,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 data class WorkflowRunSnapshot(
     val runId: RunId,
@@ -89,6 +97,137 @@ class WorkflowController(
             ),
             handler = ToolHandler { buildDeviceInfo(deviceProfileProvider()) },
         )
+        registry.register(
+            descriptor = ToolDescriptor(
+                id = CALCULATOR_TOOL,
+                displayName = "Calculator",
+                description = "Evaluates bounded arithmetic without code execution or network access.",
+                sideEffect = ToolSideEffect.Read,
+                requiredScopes = setOf(CALCULATOR_SCOPE),
+                input = ToolInputSchema(
+                    properties = mapOf("expression" to ToolProperty(ToolValueType.String, maxLength = 512)),
+                    required = setOf("expression"),
+                ),
+                timeoutSeconds = 2,
+                maxResultCharacters = 2 * 1024,
+            ),
+            handler = ToolHandler { invocation ->
+                val expression = invocation.arguments.getValue("expression").toString().trim('"')
+                buildJsonObject {
+                    put("expression", expression)
+                    put("value", SafeCalculator.evaluate(expression))
+                }
+            },
+        )
+        registry.register(
+            descriptor = ToolDescriptor(
+                id = DATE_TIME_TOOL,
+                displayName = "Date and time",
+                description = "Returns the current UTC time from the local device clock.",
+                sideEffect = ToolSideEffect.Read,
+                requiredScopes = setOf(DATE_TIME_SCOPE),
+                input = ToolInputSchema(emptyMap()),
+                timeoutSeconds = 2,
+                maxResultCharacters = 2 * 1024,
+            ),
+            handler = ToolHandler {
+                buildJsonObject {
+                    put("utc", DateTimeFormatter.ISO_INSTANT.format(Instant.now()))
+                    put("offset", ZoneOffset.UTC.id)
+                }
+            },
+        )
+        registry.register(
+            descriptor = ToolDescriptor(
+                id = RAG_SEARCH_TOOL,
+                displayName = "Local RAG search",
+                description = "Searches a selected local collection and returns citation-bearing snippets.",
+                sideEffect = ToolSideEffect.Read,
+                requiredScopes = setOf(RAG_READ_SCOPE),
+                input = ToolInputSchema(
+                    properties = mapOf(
+                        "collection_id" to ToolProperty(ToolValueType.String, maxLength = 64),
+                        "query" to ToolProperty(ToolValueType.String, maxLength = 16_384),
+                        "top_k" to ToolProperty(ToolValueType.Integer),
+                    ),
+                    required = setOf("collection_id", "query"),
+                ),
+                timeoutSeconds = 30,
+                maxResultCharacters = 256 * 1024,
+            ),
+            handler = ToolHandler { invocation ->
+                val collectionId = invocation.arguments.getValue("collection_id").toString().trim('"')
+                val query = invocation.arguments.getValue("query").toString().trim('"')
+                val topK = invocation.arguments["top_k"]?.toString()?.toIntOrNull() ?: 8
+                val results = clusterController.searchDistributedRag(
+                    dev.androml.cluster.core.ClusterRagSearchTask(
+                        collectionId = dev.androml.core.rag.CollectionId.parse(collectionId),
+                        query = dev.androml.core.rag.RetrievalQuery(query, topK = topK),
+                    ),
+                )
+                buildJsonObject {
+                    put("results", kotlinx.serialization.json.buildJsonArray {
+                        results.forEach { result ->
+                            add(buildJsonObject {
+                                put("node_id", result.nodeId.value)
+                                put("title", result.result.chunk.title)
+                                put("source", result.result.chunk.sourceLabel)
+                                put("text", result.result.chunk.text)
+                                put("score", result.result.citation.fusedScore)
+                                put("excerpt_hash", result.result.citation.excerptHash)
+                            })
+                        }
+                    })
+                }
+            },
+        )
+        registry.register(
+            descriptor = ToolDescriptor(
+                id = MODEL_INVOKE_TOOL,
+                displayName = "Model invocation",
+                description = "Runs one verified local or paired model request with bounded output.",
+                sideEffect = ToolSideEffect.Read,
+                requiredScopes = setOf(MODEL_INVOKE_SCOPE),
+                input = ToolInputSchema(
+                    properties = mapOf(
+                        "model_hash" to ToolProperty(ToolValueType.String, maxLength = 64),
+                        "prompt" to ToolProperty(ToolValueType.String, maxLength = 64 * 1024),
+                        "max_new_tokens" to ToolProperty(ToolValueType.Integer),
+                    ),
+                    required = setOf("model_hash", "prompt"),
+                ),
+                timeoutSeconds = 10 * 60,
+                maxResultCharacters = 128 * 1024,
+            ),
+            handler = ToolHandler { invocation ->
+                val modelHash = invocation.arguments.getValue("model_hash").toString().trim('"')
+                val prompt = invocation.arguments.getValue("prompt").toString().trim('"')
+                val maxNewTokens = invocation.arguments["max_new_tokens"]?.toString()?.toIntOrNull()?.coerceIn(1, 8192) ?: 256
+                val modelFile = catalogRepository.fileForArtifact(modelHash)
+                    ?: throw IllegalArgumentException("verified model artifact is not installed")
+                val runtimeId = ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+                    ?: throw IllegalArgumentException("model format is unsupported")
+                val execution = clusterController.executeBestInference(
+                    ClusterInferenceTask(
+                        modelHash = ContentHash.parse(modelHash),
+                        prompt = prompt,
+                        maxNewTokens = maxNewTokens,
+                        temperature = 0.7,
+                        contextTokens = 2_048,
+                        kvCacheBytesPerToken = 0L,
+                        cpuThreads = deviceProfileProvider().cpuCoreCount.coerceIn(1, 8),
+                        useAcceleration = false,
+                        runtimeId = runtimeId,
+                    ),
+                )
+                buildJsonObject {
+                    put("text", execution.result.text)
+                    put("generated_tokens", execution.result.generatedTokens)
+                    put("runtime_id", execution.result.runtimeId)
+                    put("node_id", execution.placement.target.value)
+                }
+            },
+        )
     }
 
     fun observeDefinitions() = definitionRepository.observe()
@@ -104,7 +243,9 @@ class WorkflowController(
         ToolExecutor(tools).execute(
             toolId = toolId,
             arguments = arguments,
-            context = ToolExecutionContext(grantedScopes = setOf(DEVICE_READ_SCOPE)),
+            context = ToolExecutionContext(
+                grantedScopes = tools.descriptors().flatMap { it.requiredScopes }.toSet(),
+            ),
         )
     }
 
@@ -260,7 +401,7 @@ class WorkflowController(
             ).run(
                 definition = definition,
                 prompt = prompt.value,
-                grantedScopes = setOf(DEVICE_READ_SCOPE),
+                grantedScopes = allToolScopes(),
             )
             val finalText = agent.finalText
                 ?: throw WorkflowNodeExecutionException(agent.safeError ?: "agent execution did not complete")
@@ -292,7 +433,7 @@ class WorkflowController(
                 val outcome = ToolExecutor(tools).execute(
                     toolId = node.toolId,
                     arguments = arguments,
-                    context = ToolExecutionContext(grantedScopes = setOf(DEVICE_READ_SCOPE)),
+                    context = ToolExecutionContext(grantedScopes = allToolScopes()),
                 )
             ) {
                 is ToolExecutionOutcome.Completed -> WorkflowValue.JsonValue(outcome.result)
@@ -329,6 +470,10 @@ class WorkflowController(
         put("has_vulkan", profile.hasVulkan)
     }
 
+    private fun allToolScopes(): Set<ToolScope> = tools.descriptors()
+        .flatMap { it.requiredScopes }
+        .toSet()
+
     private data class ApprovalKey(
         val runId: RunId,
         val nodeId: NodeId?,
@@ -339,5 +484,13 @@ class WorkflowController(
         const val MODEL_STAGE = "model"
         private val DEVICE_INFO_TOOL = ToolId.parse("device.info")
         private val DEVICE_READ_SCOPE = ToolScope.parse("device.read")
+        private val CALCULATOR_TOOL = ToolId.parse("calculator.evaluate")
+        private val CALCULATOR_SCOPE = ToolScope.parse("calculator.read")
+        private val DATE_TIME_TOOL = ToolId.parse("date.time")
+        private val DATE_TIME_SCOPE = ToolScope.parse("date.read")
+        private val RAG_SEARCH_TOOL = ToolId.parse("rag.search")
+        private val RAG_READ_SCOPE = ToolScope.parse("rag.read")
+        private val MODEL_INVOKE_TOOL = ToolId.parse("model.invoke")
+        private val MODEL_INVOKE_SCOPE = ToolScope.parse("model.invoke")
     }
 }
