@@ -239,6 +239,30 @@ fun WorkflowScreen(
                     Button(onClick = ::saveRagTemplate, enabled = !busy) {
                         Text("Save RAG workflow")
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            busy = true
+                            scope.launch {
+                                try {
+                                    val definition = withContext(Dispatchers.IO) {
+                                        controller.saveStarterAgentWorkflow()
+                                    }
+                                    selectedWorkflowId = definition.id.value
+                                    message = "Starter agent workflow saved"
+                                } catch (error: CancellationException) {
+                                    throw error
+                                } catch (error: Throwable) {
+                                    reportFailure(error, "Agent workflow could not be saved")
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        },
+                        enabled = !busy,
+                    ) {
+                        Text("Save agent workflow")
+                    }
                 }
             }
         }

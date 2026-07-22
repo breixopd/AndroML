@@ -35,6 +35,7 @@ import dev.androml.core.tools.ToolValueType
 import dev.androml.core.tools.SafeCalculator
 import dev.androml.core.tools.ToolRegistry
 import dev.androml.core.workflow.InputNode
+import dev.androml.core.workflow.AgentNode
 import dev.androml.core.workflow.ModelNode
 import dev.androml.core.workflow.NodeId
 import dev.androml.core.workflow.OutputNode
@@ -288,6 +289,21 @@ class WorkflowController(
             entry = input.id,
             nodes = listOf(input, rag, output),
             edges = listOf(WorkflowEdge(input.id, rag.id), WorkflowEdge(rag.id, output.id)),
+        )
+        definitionRepository.save(definition)
+        definition
+    }
+
+    suspend fun saveStarterAgentWorkflow(): WorkflowDefinition = withContext(Dispatchers.IO) {
+        val input = InputNode(NodeId.parse("input"), WorkflowValueType.Text)
+        val agent = AgentNode(NodeId.parse("agent"), agentKey = LOCAL_AGENT_KEY)
+        val output = OutputNode(NodeId.parse("output"))
+        val definition = WorkflowDefinition(
+            id = WorkflowId.parse("starter-agent"),
+            version = 1,
+            entry = input.id,
+            nodes = listOf(input, agent, output),
+            edges = listOf(WorkflowEdge(input.id, agent.id), WorkflowEdge(agent.id, output.id)),
         )
         definitionRepository.save(definition)
         definition
