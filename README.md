@@ -10,7 +10,7 @@ This repository is public and in the owner-controlled phone-test period. The cur
 - OSS and Play build flavors exist, but only the OSS flavor is distributed during testing.
 - The Home, Settings, Discover, Library, Playground, RAG, Workflows, API, and Cluster screens expose the complete local control surface.
 - Hugging Face search and pinned-commit imports use bounded, resumable, SHA-256 verified downloads. Local RAG accepts text, HTML, PDF, EPUB, DOCX, XLSX, and PPTX sources with citations.
-- LiteRT is bundled for verified `.tflite` text embeddings, LiteRT-LM is bundled for text generation, and ONNX Runtime Mobile is bundled for verified `.onnx`/`.ort` text embeddings. Other planned engine packs are shown as unavailable until their signed native implementations are shipped; the app never substitutes a fake model result in production.
+- LiteRT is bundled for verified `.tflite` text embeddings, LiteRT-LM is bundled for text generation, ONNX Runtime Mobile is bundled for verified `.onnx`/`.ort` text embeddings, and ExecuTorch is bundled for `.pte` tensor embeddings. Other planned engine packs are shown as unavailable until their signed native implementations are shipped; the app never substitutes a fake model result in production.
 - The API includes scoped bearer authentication, loopback/LAN mTLS gates, OpenAI chat/responses/embeddings routes, RAG, tools, workflows, agents, cluster status, and an OpenAPI document.
 - Only GitHub Releases are allowed by the product policy.
 - Google Play, F-Droid, Accrescent, IzzyOnDroid, Obtainium manifests, and every other store/repository submission is disabled until the owner explicitly approves it.

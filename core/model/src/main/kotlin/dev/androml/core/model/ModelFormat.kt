@@ -11,7 +11,7 @@ enum class ModelFormat(
     Gguf("gguf", "llamacpp", setOf(ModelWorkload.TextGeneration)),
     Onnx("onnx", "onnxruntime", setOf(ModelWorkload.TextEmbedding)),
     Ort("ort", "onnxruntime", setOf(ModelWorkload.TextEmbedding)),
-    ExecuTorch("pte", "executorch", emptySet()),
+    ExecuTorch("pte", "executorch", setOf(ModelWorkload.TextEmbedding)),
     Mlc("mlc", "mlc", emptySet()),
 }
 

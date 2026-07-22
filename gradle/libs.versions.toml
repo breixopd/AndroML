@@ -18,6 +18,7 @@ bouncy-castle = "1.84"
 litertlm = "0.14.0"
 onnxruntime = "1.26.0"
 litert = "1.4.2"
+executorch = "0.6.0-rc1"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -59,3 +60,4 @@ bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncy-cas
 litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version.ref = "litertlm" }
 onnxruntime-android = { module = "com.microsoft.onnxruntime:onnxruntime-android", version.ref = "onnxruntime" }
 litert-android = { module = "com.google.ai.edge.litert:litert", version.ref = "litert" }
+executorch-android = { module = "org.pytorch:executorch-android", version.ref = "executorch" }

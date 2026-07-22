@@ -83,19 +83,19 @@ object RuntimePackCatalog {
             note = "CPU text embeddings; optional NNAPI compatibility backend",
         ),
         RuntimePackInfo(
-            descriptor = unavailableDescriptor(
-                id = "executorch",
-                version = "pending",
-                workloads = setOf(
-                    ModelWorkload.TextGeneration,
-                    ModelWorkload.TextEmbedding,
-                    ModelWorkload.ImageGeneration,
-                    ModelWorkload.SpeechToText,
-                ),
-                note = "Native pack is not included in this build",
+            descriptor = RuntimeDescriptor(
+                id = RuntimeId.parse("executorch"),
+                version = "0.6.0-rc1",
+                supportedAbis = setOf("arm64-v8a", "x86_64"),
+                minAndroidApi = 29,
+                workloads = setOf(ModelWorkload.TextEmbedding),
+                acceleration = AccelerationBackend.Cpu,
+                requiresVulkan = false,
+                memoryOverheadBytes = 96L * 1024L * 1024L,
+                maxContextTokens = 4096,
             ),
-            state = RuntimePackState.NotBundled,
-            note = "Install a future signed runtime pack before use",
+            state = RuntimePackState.Bundled,
+            note = "CPU tensor embeddings for .pte models",
         ),
         RuntimePackInfo(
             descriptor = unavailableDescriptor(

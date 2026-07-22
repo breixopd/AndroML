@@ -108,6 +108,7 @@ dependencies {
     implementation(project(":runtime:litertlm"))
     implementation(project(":runtime:onnx"))
     implementation(project(":runtime:litert"))
+    implementation(project(":runtime:executorch"))
     implementation(project(":runtime:service"))
     implementation(project(":optimizer"))
     implementation(libs.androidx.core.ktx)

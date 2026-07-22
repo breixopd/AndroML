@@ -7,6 +7,7 @@ import dev.androml.runtime.api.RuntimePackInfo
 import dev.androml.runtime.litertlm.LiteRtLmRuntimeAdapter
 import dev.androml.runtime.litert.LiteRtRuntimeAdapter
 import dev.androml.runtime.onnx.OnnxRuntimeAdapter
+import dev.androml.runtime.executorch.ExecuTorchRuntimeAdapter
 
 /** Creates only adapters whose implementation is bundled in this APK. */
 class RuntimeRegistry(
@@ -22,6 +23,7 @@ class RuntimeRegistry(
             "litertlm" -> LiteRtLmRuntimeAdapter(modelPath)
             "litert" -> LiteRtRuntimeAdapter(modelPath)
             "onnxruntime" -> OnnxRuntimeAdapter(modelPath)
+            "executorch" -> ExecuTorchRuntimeAdapter(modelPath)
             else -> error("runtime adapter is not bundled")
         }
     }
