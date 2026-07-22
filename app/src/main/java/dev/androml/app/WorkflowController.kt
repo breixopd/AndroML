@@ -24,6 +24,8 @@ import dev.androml.core.tools.ToolExecutionOutcome
 import dev.androml.core.tools.ToolExecutor
 import dev.androml.core.tools.ToolHandler
 import dev.androml.core.tools.ToolId
+import dev.androml.core.tools.ToolAuditSink
+import dev.androml.core.tools.InMemoryToolAuditSink
 import dev.androml.core.tools.ToolProperty
 import dev.androml.core.tools.ToolScope
 import dev.androml.core.tools.ToolSideEffect
@@ -79,6 +81,7 @@ class WorkflowController(
     private val catalogRepository: dev.androml.core.database.ModelCatalogRepository,
     private val clusterController: ClusterController,
     private val deviceProfileProvider: () -> DeviceProfile,
+    private val auditSink: ToolAuditSink = InMemoryToolAuditSink(),
 ) {
     private val _lastRun = MutableStateFlow<WorkflowRunSnapshot?>(null)
     val lastRun: StateFlow<WorkflowRunSnapshot?> = _lastRun.asStateFlow()
@@ -240,7 +243,7 @@ class WorkflowController(
         toolId: ToolId,
         arguments: JsonObject,
     ): ToolExecutionOutcome = withContext(Dispatchers.IO) {
-        ToolExecutor(tools).execute(
+        ToolExecutor(tools, auditSink = auditSink).execute(
             toolId = toolId,
             arguments = arguments,
             context = ToolExecutionContext(
@@ -381,9 +384,10 @@ class WorkflowController(
                 displayName = "Local AndroML agent",
                 systemPrompt = "Answer using the supplied context. Do not claim to have used unavailable tools.",
             )
-            val agent = AgentExecutor(
-                toolRegistry = tools,
-                model = AgentModel { _, transcript ->
+                val agent = AgentExecutor(
+                    toolRegistry = tools,
+                    auditSink = auditSink,
+                    model = AgentModel { _, transcript ->
                     val transcriptText = transcriptText(transcript)
                     val stage = clusterController.executeBestWorkflowStage(
                         ClusterWorkflowStageTask(
@@ -430,7 +434,7 @@ class WorkflowController(
             val arguments = (value as? WorkflowValue.JsonValue)?.value as? JsonObject
                 ?: throw WorkflowNodeExecutionException("tool workflow node requires JSON input")
             when (
-                val outcome = ToolExecutor(tools).execute(
+                val outcome = ToolExecutor(tools, auditSink = auditSink).execute(
                     toolId = node.toolId,
                     arguments = arguments,
                     context = ToolExecutionContext(grantedScopes = allToolScopes()),

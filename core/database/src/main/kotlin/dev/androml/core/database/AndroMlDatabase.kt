@@ -23,8 +23,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ClusterPeerEntity::class,
         ClusterJobAttemptEntity::class,
         RuntimeBenchmarkEntity::class,
+        ToolAuditEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 abstract class AndroMlDatabase : RoomDatabase() {
@@ -45,6 +46,8 @@ abstract class AndroMlDatabase : RoomDatabase() {
     abstract fun clusterJobAttemptDao(): ClusterJobAttemptDao
 
     abstract fun runtimeBenchmarkDao(): RuntimeBenchmarkDao
+
+    abstract fun toolAuditDao(): ToolAuditDao
 
     companion object {
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
@@ -295,6 +298,29 @@ abstract class AndroMlDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_11_12: Migration = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS tool_audit_events (
+                        eventId TEXT NOT NULL PRIMARY KEY,
+                        eventType TEXT NOT NULL,
+                        toolId TEXT NOT NULL,
+                        sideEffect TEXT NOT NULL,
+                        argumentHash TEXT NOT NULL,
+                        resultHash TEXT,
+                        success INTEGER NOT NULL,
+                        occurredAtEpochMillis INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_tool_audit_events_occurredAtEpochMillis " +
+                        "ON tool_audit_events(occurredAtEpochMillis)",
+                )
+            }
+        }
+
         fun open(context: Context): AndroMlDatabase = Room.databaseBuilder(
             context.applicationContext,
             AndroMlDatabase::class.java,
@@ -310,6 +336,7 @@ abstract class AndroMlDatabase : RoomDatabase() {
             MIGRATION_8_9,
             MIGRATION_9_10,
             MIGRATION_10_11,
+            MIGRATION_11_12,
         ).build()
     }
 }

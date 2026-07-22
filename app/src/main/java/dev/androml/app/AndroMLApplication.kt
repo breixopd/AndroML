@@ -175,6 +175,7 @@ class AndroMLApplication : Application() {
             deviceProfileProvider = {
                 AndroidDeviceProfileCollector(applicationContext).collect()
             },
+            auditSink = RoomToolAuditSink(catalogDatabase.toolAuditDao()),
         )
     }
 
