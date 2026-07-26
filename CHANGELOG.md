@@ -7,7 +7,6 @@ All notable changes to AndroML are documented here.
 
 ### Bug Fixes
 
-* **ui:** add system theme and guided setup ([8ff310c](https://github.com/breixopd/AndroML/commit/8ff310c434eb3f6a3a7ac19b8ca1b13b75943541))
 * **ui:** add system theme and guided setup ([a5341d1](https://github.com/breixopd/AndroML/commit/a5341d1ac2d8ddb7de42c494bff824167e49acfb))
 
 ## [Unreleased]
