@@ -18,26 +18,48 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.Api
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,8 +68,10 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -105,16 +129,40 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable
-private fun AndroMLTheme(content: @Composable () -> Unit) {
-    MaterialTheme(content = content)
+private enum class AppDestination(
+    val label: String,
+    val description: String,
+    val icon: ImageVector,
+) {
+    Home("Home", "Device and model status", Icons.Outlined.Home),
+    Playground("Playground", "Run local inference", Icons.Outlined.PlayArrow),
+    Discover("Discover", "Find and download models", Icons.Outlined.Explore),
+    Library("Library", "Installed model revisions", Icons.Outlined.Inventory2),
+    Rag("RAG", "Local knowledge collections", Icons.AutoMirrored.Outlined.MenuBook),
+    Workflows("Workflows", "Tools and agent automation", Icons.Outlined.AccountTree),
+    Api("API", "Secure local API server", Icons.Outlined.Api),
+    Cluster("Cluster", "Distributed inference peers", Icons.Outlined.Hub),
+    Settings("Settings", "Device and engine controls", Icons.Outlined.Settings),
 }
+
+private val appDestinationSections = listOf(
+    "Models" to listOf(
+        AppDestination.Home,
+        AppDestination.Playground,
+        AppDestination.Discover,
+        AppDestination.Library,
+    ),
+    "Build" to listOf(AppDestination.Rag, AppDestination.Workflows),
+    "Connect" to listOf(AppDestination.Api, AppDestination.Cluster),
+    "System" to listOf(AppDestination.Settings),
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AndroMLApp() {
-    val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "Workflows", "API", "Cluster", "Settings")
-    var selectedDestination by remember { mutableIntStateOf(0) }
+    var selectedDestination by rememberSaveable { mutableStateOf(AppDestination.Home) }
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val appScope = rememberCoroutineScope()
     val context = LocalContext.current
     var appSettings by remember(context) {
         mutableStateOf(AppSettingsStore.load(context))
@@ -137,110 +185,185 @@ private fun AndroMLApp() {
     val workflowDefinitionRepository = application.workflowDefinitionRepository
     val apiState by apiController.state.collectAsState()
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("AndroML", fontWeight = FontWeight.Bold)
-                        Text(
-                            text = "On-device model control",
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            NavigationBar {
-                destinations.forEachIndexed { index, destination ->
-                    NavigationBarItem(
-                        selected = selectedDestination == index,
-                        onClick = { selectedDestination = index },
-                        icon = {},
-                        label = { Text(destination) },
+    fun navigateTo(destination: AppDestination) {
+        selectedDestination = destination
+        appScope.launch { drawerState.close() }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(modifier = Modifier.widthIn(max = 360.dp)) {
+                Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp)) {
+                    Icon(
+                        imageVector = Icons.Outlined.Memory,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Text("AndroML", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Local AI control plane",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                HorizontalDivider()
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                ) {
+                    appDestinationSections.forEach { (section, destinations) ->
+                        item(key = "section-$section") {
+                            Text(
+                                section,
+                                modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        items(
+                            items = destinations,
+                            key = { it.name },
+                        ) { destination ->
+                            NavigationDrawerItem(
+                                selected = selectedDestination == destination,
+                                onClick = { navigateTo(destination) },
+                                icon = {
+                                    Icon(
+                                        imageVector = destination.icon,
+                                        contentDescription = null,
+                                    )
+                                },
+                                label = {
+                                    Column {
+                                        Text(destination.label)
+                                        Text(
+                                            destination.description,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                            )
+                        }
+                    }
                 }
             }
         },
-    ) { paddingValues ->
-        if (selectedDestination == 0) {
-            HomeScreen(
-                modifier = Modifier.padding(paddingValues),
-                releasePolicy = ReleasePolicy.testPeriod(),
-                deviceProfile = deviceProfile,
-                modelCount = catalogModels.size,
-                bundledRuntimeCount = RuntimePackCatalog.bundled.size,
-            )
-        } else if (selectedDestination == 1) {
-            PlaygroundScreen(
-                modifier = Modifier.padding(paddingValues),
-                serviceClient = inferenceServiceClient,
-                clusterController = application.clusterController,
-                deviceProfile = deviceProfile,
-                installedModelFiles = catalogFiles,
-                artifactStore = application.artifactStore,
-                benchmarkRepository = application.runtimeBenchmarkRepository,
-                settings = appSettings,
-            )
-        } else if (selectedDestination == 2) {
-            DiscoverScreen(
-                modifier = Modifier.padding(paddingValues),
-                modelClient = huggingFaceClient,
-                workManager = workManager,
-                catalogRepository = catalogRepository,
-                secretStore = application.secretStore,
-            )
-        } else if (selectedDestination == 3) {
-            LibraryScreen(
-                modifier = Modifier.padding(paddingValues),
-                models = catalogModels,
-                files = catalogFiles,
-            )
-        } else if (selectedDestination == 4) {
-            RagScreen(
-                modifier = Modifier.padding(paddingValues),
-                repository = ragRepository,
-                artifactStore = application.artifactStore,
-                clusterController = application.clusterController,
-            )
-        } else if (selectedDestination == 5) {
-            WorkflowScreen(
-                modifier = Modifier.padding(paddingValues),
-                controller = workflowController,
-                definitionRepository = workflowDefinitionRepository,
-                installedModelFiles = catalogFiles,
-            )
-        } else if (selectedDestination == 6) {
-            ApiScreen(
-                modifier = Modifier.padding(paddingValues),
-                controller = apiController,
-                keyRepository = apiKeyRepository,
-                auditDao = application.catalogDatabase.toolAuditDao(),
-                tlsIdentityStore = application.apiTlsIdentityStore,
-                clientCertificateStore = application.apiClientCertificateStore,
-            )
-        } else if (selectedDestination == 7) {
-            ClusterScreen(
-                modifier = Modifier.padding(paddingValues),
-                repository = clusterPeerRepository,
-                tlsIdentityStore = application.clusterTlsIdentityStore,
-                controller = application.clusterController,
-                discovery = application.clusterDiscovery,
-            )
-        } else {
-            SettingsScreen(
-                modifier = Modifier.padding(paddingValues),
-                deviceProfile = deviceProfile,
-                releasePolicy = ReleasePolicy.testPeriod(),
-                runtimePacks = RuntimePackCatalog.production,
-                apiState = apiState,
-                settings = appSettings,
-                onSettingsChanged = { next ->
-                    appSettings = next
-                    AppSettingsStore.save(context, next)
-                },
-            )
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = { appScope.launch { drawerState.open() } }) {
+                            Icon(
+                                imageVector = Icons.Outlined.Menu,
+                                contentDescription = "Open navigation",
+                            )
+                        }
+                    },
+                    title = {
+                        Column {
+                            Text(selectedDestination.label, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = selectedDestination.description,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                )
+            },
+        ) { paddingValues ->
+            when (selectedDestination) {
+                AppDestination.Home -> HomeScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    releasePolicy = ReleasePolicy.testPeriod(),
+                    deviceProfile = deviceProfile,
+                    modelCount = catalogFiles
+                        .asSequence()
+                        .filter { it.artifactSha256 != null }
+                        .map { it.modelId to it.revision }
+                        .distinct()
+                        .count(),
+                    bundledRuntimeCount = RuntimePackCatalog.bundled.size,
+                    onBrowseModels = { navigateTo(AppDestination.Discover) },
+                    onOpenPlayground = { navigateTo(AppDestination.Playground) },
+                )
+
+                AppDestination.Playground -> PlaygroundScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    serviceClient = inferenceServiceClient,
+                    clusterController = application.clusterController,
+                    deviceProfile = deviceProfile,
+                    installedModelFiles = catalogFiles,
+                    artifactStore = application.artifactStore,
+                    benchmarkRepository = application.runtimeBenchmarkRepository,
+                    settings = appSettings,
+                )
+
+                AppDestination.Discover -> DiscoverScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    modelClient = huggingFaceClient,
+                    workManager = workManager,
+                    catalogRepository = catalogRepository,
+                    secretStore = application.secretStore,
+                )
+
+                AppDestination.Library -> LibraryScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    models = catalogModels,
+                    files = catalogFiles,
+                    onBrowseModels = { navigateTo(AppDestination.Discover) },
+                )
+
+                AppDestination.Rag -> RagScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    repository = ragRepository,
+                    artifactStore = application.artifactStore,
+                    clusterController = application.clusterController,
+                )
+
+                AppDestination.Workflows -> WorkflowScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    controller = workflowController,
+                    definitionRepository = workflowDefinitionRepository,
+                    installedModelFiles = catalogFiles,
+                )
+
+                AppDestination.Api -> ApiScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    controller = apiController,
+                    keyRepository = apiKeyRepository,
+                    auditDao = application.catalogDatabase.toolAuditDao(),
+                    tlsIdentityStore = application.apiTlsIdentityStore,
+                    clientCertificateStore = application.apiClientCertificateStore,
+                )
+
+                AppDestination.Cluster -> ClusterScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    repository = clusterPeerRepository,
+                    tlsIdentityStore = application.clusterTlsIdentityStore,
+                    controller = application.clusterController,
+                    discovery = application.clusterDiscovery,
+                )
+
+                AppDestination.Settings -> SettingsScreen(
+                    modifier = Modifier.padding(paddingValues),
+                    deviceProfile = deviceProfile,
+                    releasePolicy = ReleasePolicy.testPeriod(),
+                    runtimePacks = RuntimePackCatalog.production,
+                    apiState = apiState,
+                    settings = appSettings,
+                    onBrowseModels = { navigateTo(AppDestination.Discover) },
+                    onSettingsChanged = { next ->
+                        appSettings = next
+                        AppSettingsStore.save(context, next)
+                    }
+                )
+            }
         }
     }
 }
@@ -706,12 +829,52 @@ private fun HomeScreen(
     deviceProfile: DeviceProfile,
     modelCount: Int,
     bundledRuntimeCount: Int,
+    onBrowseModels: () -> Unit,
+    onOpenPlayground: () -> Unit,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item {
+            Column {
+                Text(
+                    if (modelCount == 0) "Set up your first local model" else "Your local AI workspace",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    if (modelCount == 0) {
+                        "Choose a model from Hugging Face. AndroML will verify the download and select a compatible included engine."
+                    } else {
+                        "Models, runtimes, APIs, automations, and cluster peers stay under your control."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Button(
+                    onClick = onBrowseModels,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.Download, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (modelCount == 0) "Find and install a model" else "Browse more models")
+                }
+                if (modelCount > 0) {
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = onOpenPlayground,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Outlined.Bolt, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Open playground")
+                    }
+                }
+            }
+        }
         item {
             Surface(
                 color = MaterialTheme.colorScheme.secondaryContainer,
@@ -747,8 +910,12 @@ private fun HomeScreen(
         item {
             StatusCard(
                 title = "Runtime packs",
-                value = if (bundledRuntimeCount == 0) "No runtime packs bundled" else "$bundledRuntimeCount runtime pack bundled",
-                detail = "Only verified, bundled engines can run. Open Settings for the full engine compatibility matrix.",
+                value = if (bundledRuntimeCount == 0) {
+                    "No inference engines included"
+                } else {
+                    "$bundledRuntimeCount inference engines included"
+                },
+                detail = "Included engines are ready to use; auto-optimisation picks the best compatible option for each model.",
             )
         }
         item {
@@ -1038,6 +1205,9 @@ private fun DiscoverScreen(
                                 strokeWidth = 2.dp,
                             )
                             Spacer(Modifier.width(8.dp))
+                        } else {
+                            Icon(Icons.Outlined.Search, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
                         }
                         Text("Search Hugging Face")
                     }
@@ -1073,7 +1243,11 @@ private fun DiscoverScreen(
                                             searchMessage = "Pinned ${result.modelId} at ${revision.take(12)}…"
                                         }
                                     },
-                                ) { Text("Use immutable revision") }
+                                ) {
+                                    Icon(Icons.Outlined.PushPin, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Use immutable revision")
+                                }
                             }
                         }
                     }
@@ -1169,6 +1343,9 @@ private fun DiscoverScreen(
                                 modifier = Modifier.width(20.dp).height(20.dp),
                                 strokeWidth = 2.dp,
                             )
+                            Spacer(Modifier.width(8.dp))
+                        } else {
+                            Icon(Icons.Outlined.Search, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                         }
                         Text("Inspect pinned metadata")
@@ -1273,6 +1450,10 @@ private fun DiscoverScreen(
                                 enabled = descriptor.sha256 != null &&
                                     downloadState !is HuggingFaceDownloadUiState.Running,
                             ) {
+                                if (descriptor.sha256 != null) {
+                                    Icon(Icons.Outlined.Download, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                }
                                 Text(if (descriptor.sha256 == null) "Integrity data required" else "Download file")
                             }
                         }
@@ -1350,6 +1531,7 @@ private fun LibraryScreen(
     modifier: Modifier = Modifier,
     models: List<ModelRecordEntity>,
     files: List<ModelFileEntity>,
+    onBrowseModels: () -> Unit,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -1365,11 +1547,32 @@ private fun LibraryScreen(
         }
         if (models.isEmpty()) {
             item {
-                StatusCard(
-                    title = "No pinned revisions",
-                    value = "Library is empty",
-                    detail = "Inspect a Hugging Face revision from Discover to add its provenance and file list.",
-                )
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Icon(
+                            imageVector = Icons.Outlined.Inventory2,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text("No models installed", style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Search Hugging Face, inspect a pinned revision, then download a verified model file.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Button(
+                            onClick = onBrowseModels,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Outlined.Explore, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Browse Hugging Face")
+                        }
+                    }
+                }
             }
         } else {
             items(
@@ -1473,6 +1676,8 @@ private fun HomeScreenPreview() {
             ),
             modelCount = 0,
             bundledRuntimeCount = RuntimePackCatalog.bundled.size,
+            onBrowseModels = {},
+            onOpenPlayground = {},
         )
     }
 }

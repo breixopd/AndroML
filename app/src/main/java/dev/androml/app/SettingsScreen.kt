@@ -10,16 +10,27 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.ExtensionOff
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.edit
 import dev.androml.core.model.AppSettings
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ReleasePolicy
@@ -33,8 +44,12 @@ fun SettingsScreen(
     runtimePacks: List<RuntimePackInfo>,
     apiState: LocalApiState,
     settings: AppSettings,
+    onBrowseModels: () -> Unit,
     onSettingsChanged: (AppSettings) -> Unit,
 ) {
+    val includedRuntimePacks = runtimePacks.filter { it.usable }
+    val unavailableRuntimePacks = runtimePacks.filterNot { it.usable }
+
     fun update(next: AppSettings) {
         onSettingsChanged(next)
     }
@@ -50,6 +65,28 @@ fun SettingsScreen(
                 "Power-user controls are visible during the private phone-test period. Changes are stored locally on this device.",
                 style = MaterialTheme.typography.bodyMedium,
             )
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.DarkMode,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text("Appearance follows your phone", fontWeight = FontWeight.Bold)
+                        Text(
+                            "AndroML automatically uses the system light or dark theme.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
         }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
@@ -107,24 +144,131 @@ fun SettingsScreen(
                 }
             }
         }
-        item { Text("Runtime packs", style = MaterialTheme.typography.titleMedium) }
-        items(runtimePacks, key = { it.descriptor.id.value }) { pack ->
+        item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Text(pack.descriptor.id.value, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                        Text(if (pack.usable) "bundled" else "not bundled", style = MaterialTheme.typography.labelMedium)
+                    Icon(
+                        imageVector = Icons.Outlined.Memory,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text("Engines are included", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "All supported inference engines ship inside the signed app. There is nothing else to install—download a compatible model and auto-optimisation will pick the engine.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = onBrowseModels,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Outlined.Download, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Find and install a model")
+                    }
+                }
+            }
+        }
+        item {
+            Text(
+                "Included inference engines",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        items(includedRuntimePacks, key = { it.descriptor.id.value }) { pack ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            runtimeDisplayName(pack.descriptor.id.value),
+                            modifier = Modifier.weight(1f),
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            "Included · ready",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
                     }
                     Text("${pack.descriptor.version} · ${pack.note}", style = MaterialTheme.typography.bodySmall)
                     Text(
-                        "Workloads: ${pack.descriptor.workloads.joinToString { it.name }} · ABI: ${pack.descriptor.supportedAbis.joinToString()}",
+                        "Workloads: ${pack.descriptor.workloads.joinToString { readableName(it.name) }} · ABI: ${pack.descriptor.supportedAbis.joinToString()}",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
         }
+        if (unavailableRuntimePacks.isNotEmpty()) {
+            item {
+                Text(
+                    "Not available in this build",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            items(unavailableRuntimePacks, key = { "unavailable-${it.descriptor.id.value}" }) { pack ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.ExtensionOff,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                runtimeDisplayName(pack.descriptor.id.value),
+                                modifier = Modifier.weight(1f),
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text("Not shipped", style = MaterialTheme.typography.labelMedium)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "${pack.descriptor.version} · No signed, tested Android integration is available yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "AndroML does not download executable engine code on demand. A runtime is enabled only after it can ship through the app's signed, tested release path.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
+
+private fun runtimeDisplayName(runtimeId: String): String = when (runtimeId) {
+    "litert" -> "LiteRT"
+    "litertlm" -> "LiteRT-LM"
+    "onnxruntime" -> "ONNX Runtime"
+    "executorch" -> "ExecuTorch"
+    "llamacpp" -> "llama.cpp"
+    "mlc" -> "MLC"
+    else -> runtimeId
+}
+
+private val camelCaseBoundary = Regex("(?<=[a-z])(?=[A-Z])")
+
+private fun readableName(value: String): String = value.replace(camelCaseBoundary, " ")
 
 @Composable
 private fun SettingToggle(
@@ -133,7 +277,10 @@ private fun SettingToggle(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    Row(modifier = Modifier.fillMaxWidth()) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.Bold)
             Text(detail, style = MaterialTheme.typography.bodySmall)
@@ -167,11 +314,11 @@ internal object AppSettingsStore {
     }
 
     fun save(context: Context, settings: AppSettings) {
-        context.getSharedPreferences(SETTINGS_PREFERENCES, Context.MODE_PRIVATE).edit()
-            .putBoolean(KEY_EXPERT_MODE, settings.expertMode)
-            .putBoolean(KEY_AUTO_OPTIMIZE, settings.autoOptimize)
-            .putBoolean(KEY_BACKGROUND_DOWNLOADS, settings.allowBackgroundDownloads)
-            .putBoolean(KEY_THERMAL_GUARD, settings.thermalGuard)
-            .apply()
+        context.getSharedPreferences(SETTINGS_PREFERENCES, Context.MODE_PRIVATE).edit {
+            putBoolean(KEY_EXPERT_MODE, settings.expertMode)
+            putBoolean(KEY_AUTO_OPTIMIZE, settings.autoOptimize)
+            putBoolean(KEY_BACKGROUND_DOWNLOADS, settings.allowBackgroundDownloads)
+            putBoolean(KEY_THERMAL_GUARD, settings.thermalGuard)
+        }
     }
 }

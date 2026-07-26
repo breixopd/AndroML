@@ -52,6 +52,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            // AGP cannot shrink resources for a variant that emits both ABI-split APKs
+            // and an app bundle (b/402800800). R8 code shrinking still removes unused icons.
             if (
                 releaseKeystorePath != null &&
                 releaseStorePassword != null &&
@@ -136,6 +138,7 @@ dependencies {
     androidTestImplementation(composeBom)
 
     implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)
