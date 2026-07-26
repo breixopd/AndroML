@@ -67,6 +67,7 @@ import dev.androml.core.workflow.WorkflowValue
 import dev.androml.core.workflow.WorkflowValueCodec
 import java.util.UUID
 import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -78,6 +79,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 sealed interface ClusterControllerState {
     data object Disabled : ClusterControllerState
@@ -115,7 +119,11 @@ class ClusterController(
 ) {
     private val _state = MutableStateFlow<ClusterControllerState>(ClusterControllerState.Disabled)
     private val pairingInvites = ClusterPairingInviteIssuer()
+    private val transferLock = Mutex()
+    private val lastStagingCleanupEpochMillis = AtomicLong(0L)
     private var server: ClusterExecutionServer? = null
+    private val stagedTransfers = mutableMapOf<String, StagedTransfer>()
+    private data class StagedTransfer(val peer: PeerId, val size: Long, val expiresAt: Long)
     @Volatile
     private var localAdvertisement: ClusterCapabilityAdvertisement? = null
     val state: StateFlow<ClusterControllerState> = _state.asStateFlow()
@@ -169,17 +177,24 @@ class ClusterController(
             X509CertificateCodec.decodeDer(stored.certificateDer)
         }
         val material = MtlsContextFactory.serverMaterial(identity, certificates)
-        val pairedPeerMap = activePeers.associate { stored ->
-            stored.peer.fingerprint to stored.peer.id
-        }
         val candidate = ClusterExecutionServer(
             config = ClusterTransportConfig(host = "0.0.0.0", port = port),
             tlsMaterial = material,
-            pairedPeers = { pairedPeerMap },
+            // Resolve pairing/revocation on every request; startup snapshots must not
+            // keep a revoked peer authorized until the listener is restarted.
+            pairedPeers = {
+                peerRepository.snapshot()
+                    .filter { stored ->
+                        stored.peer.paired && !stored.peer.revoked &&
+                            stored.peer.certificateExpiresAtEpochMillis > System.currentTimeMillis()
+                    }
+                    .associate { stored -> stored.peer.fingerprint to stored.peer.id }
+            },
             executor = IdempotentClusterExecutor(
                 ledger = ledger,
                 handler = LocalClusterExecutionHandler(),
                 nowEpochMillis = { System.currentTimeMillis() },
+                maxConcurrentExecutions = advertisement.capabilities.maxConcurrentJobs,
             ),
             localAdvertisement = { localAdvertisement },
         )
@@ -264,17 +279,7 @@ class ClusterController(
         val jobId = ClusterJobId.parse("inference-${UUID.randomUUID()}")
         val deadline = System.currentTimeMillis() + timeoutMillis
 
-        peerRepository.snapshot()
-            .filter { it.peer.paired && !it.peer.revoked }
-            .forEach { stored ->
-                try {
-                    refreshPeer(stored.peer.id)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    // A stale/offline peer is excluded by the router below.
-                }
-            }
+        refreshEligiblePeers(deadline)
 
         val localNode = buildLocalNode(identity)
         val remoteNodes = peerRepository.snapshot().map { stored ->
@@ -339,17 +344,7 @@ class ClusterController(
         val jobId = ClusterJobId.parse("rag-${UUID.randomUUID()}")
         val deadline = System.currentTimeMillis() + timeoutMillis
 
-        peerRepository.snapshot()
-            .filter { it.peer.paired && !it.peer.revoked }
-            .forEach { stored ->
-                try {
-                    refreshPeer(stored.peer.id)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    // Offline nodes are omitted from the fan-out.
-                }
-            }
+        refreshEligiblePeers(deadline)
         val peers = peerRepository.snapshot()
             .filter { stored ->
                 stored.peer.paired &&
@@ -404,17 +399,7 @@ class ClusterController(
         val jobId = ClusterJobId.parse("workflow-${UUID.randomUUID()}")
         val deadline = System.currentTimeMillis() + timeoutMillis
 
-        peerRepository.snapshot()
-            .filter { it.peer.paired && !it.peer.revoked }
-            .forEach { stored ->
-                try {
-                    refreshPeer(stored.peer.id)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    // A stale/offline peer is excluded by the router below.
-                }
-            }
+        refreshEligiblePeers(deadline)
 
         val localNode = buildLocalNode(identity)
         val remoteNodes = peerRepository.snapshot().map { stored ->
@@ -631,13 +616,25 @@ class ClusterController(
                     }
                 }
                 ClusterWorkload.ModelTransfer -> runBlocking(Dispatchers.IO) {
-                    executeLocalModelTransfer(request.payload)
+                    executeLocalModelTransfer(request.sourcePeerId, request.payload)
                 }
             }
         }
     }
 
-    private suspend fun executeLocalModelTransfer(payload: ByteArray): ByteArray {
+    private suspend fun executeLocalModelTransfer(sourcePeer: PeerId, payload: ByteArray): ByteArray {
+        maybeCleanupStaging()
+        return transferLock.withLock {
+            executeLocalModelTransferLocked(sourcePeer, payload)
+        }
+    }
+
+    private suspend fun executeLocalModelTransferLocked(sourcePeer: PeerId, payload: ByteArray): ByteArray {
+        val paired = peerRepository.snapshot().firstOrNull { it.peer.id == sourcePeer }
+        require(paired != null && paired.peer.paired && !paired.peer.revoked &&
+            paired.peer.certificateExpiresAtEpochMillis > System.currentTimeMillis()) {
+            "model transfer peer is not authorized"
+        }
         val chunk = ClusterModelTransferCodec.decodeChunk(payload)
         require(chunk.isPrivate || chunk.license != null) {
             "model transfer metadata must include a license or private declaration"
@@ -650,6 +647,26 @@ class ClusterController(
                 ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, chunk.totalSizeBytes, committed = true),
             )
         }
+        val transferKey = "${sourcePeer.value}:${chunk.transferId}"
+        synchronized(stagedTransfers) {
+            val now = System.currentTimeMillis()
+            stagedTransfers.entries.removeIf { it.value.expiresAt <= now }
+            val existing = stagedTransfers[transferKey]
+            if (existing == null) {
+                require(stagedTransfers.values.count { it.peer == sourcePeer } < MAX_ACTIVE_TRANSFERS_PER_PEER) {
+                    "too many active model transfers for peer"
+                }
+                require(stagedTransfers.values.filter { it.peer == sourcePeer }.sumOf { it.size } + chunk.totalSizeBytes <= MAX_STAGING_BYTES_PER_PEER) {
+                    "model transfer peer staging quota exceeded"
+                }
+                require(stagedTransfers.values.sumOf { it.size } + chunk.totalSizeBytes <= MAX_STAGING_BYTES) {
+                    "model transfer staging quota exceeded"
+                }
+                stagedTransfers[transferKey] = StagedTransfer(sourcePeer, chunk.totalSizeBytes, now + STAGING_EXPIRY_MILLIS)
+            } else {
+                require(existing.size == chunk.totalSizeBytes) { "model transfer size changed" }
+            }
+        }
         val staged = artifactStore.beginResumable(
             key = "cluster-${chunk.transferId}-${chunk.artifactHash.value.take(16)}",
             expectedSha256 = chunk.artifactHash.value,
@@ -660,6 +677,7 @@ class ClusterController(
             if (current == chunk.totalSizeBytes && chunk.finalChunk) {
                 resumable.commit()
                 registerTransferredMetadata(chunk)
+                synchronized(stagedTransfers) { stagedTransfers.remove(transferKey) }
                 return ClusterModelTransferCodec.encodeAck(
                     ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, chunk.totalSizeBytes, committed = true),
                 )
@@ -676,6 +694,7 @@ class ClusterController(
                 require(nextOffset == chunk.totalSizeBytes) { "final model transfer chunk is incomplete" }
                 resumable.commit()
                 registerTransferredMetadata(chunk)
+                synchronized(stagedTransfers) { stagedTransfers.remove(transferKey) }
                 true
             } else {
                 false
@@ -704,6 +723,43 @@ class ClusterController(
             ),
         )
         catalogRepository.markArtifactVerified(reference, chunk.path, chunk.artifactHash.value)
+    }
+
+    private suspend fun refreshEligiblePeers(deadlineEpochMillis: Long) = coroutineScope {
+        val remainingMillis = deadlineEpochMillis - System.currentTimeMillis()
+        if (remainingMillis <= 0L) return@coroutineScope
+        // Capability refresh is opportunistic. Reserve most of the caller's budget for
+        // actual execution and fall back to the last authenticated advertisement.
+        val refreshBudgetMillis = minOf(
+            PEER_REFRESH_TIMEOUT_MILLIS,
+            (remainingMillis / 4L).coerceAtLeast(1L),
+        )
+        peerRepository.snapshot()
+            .filter { it.peer.paired && !it.peer.revoked }
+            .map { stored ->
+                async(Dispatchers.IO) {
+                    try {
+                        withTimeoutOrNull(refreshBudgetMillis) {
+                            refreshPeer(stored.peer.id)
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }
+            .awaitAll()
+    }
+
+    private fun maybeCleanupStaging() {
+        val now = System.currentTimeMillis()
+        val previous = lastStagingCleanupEpochMillis.get()
+        if (now - previous >= STAGING_CLEANUP_INTERVAL_MILLIS &&
+            lastStagingCleanupEpochMillis.compareAndSet(previous, now)
+        ) {
+            artifactStore.cleanupStaging(STAGING_EXPIRY_MILLIS)
+        }
     }
 
     private fun readChunk(artifactHash: String, offset: Long, totalSize: Long): ByteArray {
@@ -1006,6 +1062,12 @@ class ClusterController(
         const val CAPABILITY_STALE_AFTER_MILLIS = 30_000L
         const val WORKFLOW_MODEL_STAGE = "model"
         const val WORKFLOW_RAG_STAGE = "rag"
+        const val MAX_ACTIVE_TRANSFERS_PER_PEER = 2
+        const val MAX_STAGING_BYTES = 16L shl 30
+        const val MAX_STAGING_BYTES_PER_PEER = 8L shl 30
+        const val PEER_REFRESH_TIMEOUT_MILLIS = 5_000L
+        const val STAGING_CLEANUP_INTERVAL_MILLIS = 10 * 60_000L
+        const val STAGING_EXPIRY_MILLIS = 30 * 60 * 1_000L
 
         fun sha256(value: ByteArray): String =
             java.security.MessageDigest.getInstance("SHA-256")

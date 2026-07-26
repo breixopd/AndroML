@@ -78,6 +78,7 @@ class HuggingFaceMetadataParser {
     }
 
     private fun parseRoot(body: String): JsonObject = try {
+        JsonSafety.validate(body)
         json.parseToJsonElement(body).jsonObject
     } catch (error: SerializationException) {
         throw HuggingFaceMetadataException(
@@ -91,6 +92,8 @@ class HuggingFaceMetadataParser {
             message = "Hugging Face response must be a JSON object",
             cause = error,
         )
+    } catch (error: StackOverflowError) {
+        throw HuggingFaceMetadataException(HuggingFaceMetadataError.InvalidJson, "Hugging Face response JSON is too deeply nested", error)
     }
 
     private fun parseFiles(element: JsonElement): List<HuggingFaceFileDescriptor> {
@@ -101,6 +104,12 @@ class HuggingFaceMetadataParser {
                 code = HuggingFaceMetadataError.InvalidField,
                 message = "Hugging Face response siblings must be an array",
                 cause = error,
+            )
+        }
+        if (siblings.size > MAX_REPOSITORY_FILES) {
+            throw HuggingFaceMetadataException(
+                code = HuggingFaceMetadataError.InvalidField,
+                message = "Hugging Face response contains too many files",
             )
         }
 
@@ -123,6 +132,10 @@ class HuggingFaceMetadataParser {
             )
         }
         return files
+    }
+
+    private companion object {
+        const val MAX_REPOSITORY_FILES = 10_000
     }
 
     private fun parseFile(index: Int, sibling: JsonObject): HuggingFaceFileDescriptor {

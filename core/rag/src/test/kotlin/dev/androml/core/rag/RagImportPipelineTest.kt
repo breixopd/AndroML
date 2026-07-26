@@ -5,6 +5,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class RagImportPipelineTest {
@@ -33,6 +34,24 @@ class RagImportPipelineTest {
         val document = pipeline.import("memo.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ByteArrayInputStream(bytes))
         assertEquals(RagSourceFormat.Docx, document.format)
         assertTrue(document.text.contains("hello from docx"))
+    }
+
+    @Test
+    fun handlesLongMalformedMarkupWithoutRegexBacktracking() {
+        val document = pipeline.import("notes.html", "text/html", ByteArrayInputStream(("<".repeat(500_000) + "hello").toByteArray()))
+        assertTrue(document.text.contains("hello"))
+    }
+
+    @Test
+    fun boundsIgnoredArchiveEntriesToo() {
+        val bytes = ByteArrayOutputStream().also { output ->
+            ZipOutputStream(output).use { zip ->
+                zip.putNextEntry(ZipEntry("media.bin")); zip.write(ByteArray(64 * 1024 * 1024 + 1)); zip.closeEntry()
+            }
+        }.toByteArray()
+        assertThrows(RagImportException::class.java) {
+            pipeline.import("x.docx", null, ByteArrayInputStream(bytes))
+        }
     }
 
     private class ByteArrayOutputStream : java.io.ByteArrayOutputStream()

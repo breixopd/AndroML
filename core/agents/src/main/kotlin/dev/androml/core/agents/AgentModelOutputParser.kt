@@ -21,7 +21,14 @@ object AgentModelOutputParser {
         require(output.length <= MAX_OUTPUT_CHARS) { "agent model output is too large" }
         val candidate = output.trim()
         if (!candidate.startsWith("{")) return AgentModelDecision.Final(output)
-        val root = runCatching { Json.parseToJsonElement(candidate).jsonObject }.getOrNull()
+        if (!hasSafeJsonStructure(candidate)) return AgentModelDecision.Final(output)
+        val root = try {
+            Json.parseToJsonElement(candidate).jsonObject
+        } catch (_: Exception) {
+            null
+        } catch (_: StackOverflowError) {
+            null
+        }
             ?: return AgentModelDecision.Final(output)
         val toolCall = root["tool_call"]?.let { element ->
             runCatching { element.jsonObject }.getOrNull()
@@ -35,4 +42,40 @@ object AgentModelOutputParser {
             arguments = arguments,
         )
     }
+
+    private fun hasSafeJsonStructure(value: String): Boolean {
+        var depth = 0
+        var structuralTokens = 0
+        var inString = false
+        var escaped = false
+        value.forEach { character ->
+            if (inString) {
+                if (escaped) escaped = false
+                else if (character == '\\') escaped = true
+                else if (character == '"') inString = false
+            } else {
+                when (character) {
+                    '"' -> inString = true
+                    '{', '[' -> {
+                        depth += 1
+                        structuralTokens += 1
+                        if (depth > MAX_JSON_DEPTH || structuralTokens > MAX_STRUCTURAL_TOKENS) return false
+                    }
+                    '}', ']' -> {
+                        depth -= 1
+                        structuralTokens += 1
+                        if (depth < 0 || structuralTokens > MAX_STRUCTURAL_TOKENS) return false
+                    }
+                    ',', ':' -> {
+                        structuralTokens += 1
+                        if (structuralTokens > MAX_STRUCTURAL_TOKENS) return false
+                    }
+                }
+            }
+        }
+        return !inString && depth == 0
+    }
+
+    private const val MAX_JSON_DEPTH = 32
+    private const val MAX_STRUCTURAL_TOKENS = 8_192
 }

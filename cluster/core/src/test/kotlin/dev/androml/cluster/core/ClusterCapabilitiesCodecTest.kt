@@ -36,4 +36,12 @@ class ClusterCapabilitiesCodecTest {
             ClusterCapabilitiesCodec.decode(raw)
         }
     }
+
+    @Test
+    fun capabilityAdvertisementRejectsExcessiveJsonDepth() {
+        val raw = "[".repeat(65) + "]".repeat(65)
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            ClusterCapabilitiesCodec.decode(raw)
+        }
+    }
 }

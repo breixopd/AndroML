@@ -44,6 +44,12 @@ interface PendingApprovalDao {
     @Query("SELECT * FROM pending_approvals WHERE expiresAtEpochMillis <= :nowEpochMillis")
     suspend fun expired(nowEpochMillis: Long): List<PendingApprovalEntity>
 
+    @Query("SELECT COUNT(*) FROM pending_approvals")
+    suspend fun countAll(): Int
+
+    @Query("SELECT COALESCE(SUM(chunkCount), 0) FROM pending_approvals")
+    suspend fun totalChunks(): Int
+
     @Query("DELETE FROM pending_approvals WHERE expiresAtEpochMillis <= :nowEpochMillis")
     suspend fun deleteExpired(nowEpochMillis: Long): Int
 }

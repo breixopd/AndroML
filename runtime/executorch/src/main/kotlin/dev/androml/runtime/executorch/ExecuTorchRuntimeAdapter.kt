@@ -17,6 +17,7 @@ import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
 import dev.androml.runtime.api.TensorDataType
 import dev.androml.runtime.api.TensorInput
+import dev.androml.runtime.api.estimatedPeakMemoryBytes
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import org.pytorch.executorch.EValue
@@ -44,7 +45,7 @@ class ExecuTorchRuntimeAdapter(
         return RuntimeCompatibilityReport(
             compatible = reasons.isEmpty(),
             reasons = reasons,
-            estimatedPeakMemoryBytes = model.estimatedWorkingSetBytes + descriptor.memoryOverheadBytes,
+            estimatedPeakMemoryBytes = descriptor.estimatedPeakMemoryBytes(model),
         )
     }
 
@@ -108,13 +109,19 @@ private class ExecuTorchRuntimeSession(
             val output = module.forward(
                 EValue.from(Tensor.fromBlob(values, shape)),
             )
+            require(output.size in 1..MAX_OUTPUTS) {
+                "ExecuTorch model returned too many outputs"
+            }
             if (cancelled.get()) {
                 emit(InferenceEvent.Cancelled(request.id))
                 return
             }
             val tensor = output.firstOrNull()?.toTensor()
+            val outputElements = tensor?.numel() ?: 0L
+            require(outputElements in 0L..MAX_OUTPUT_ELEMENTS) {
+                "ExecuTorch output exceeds the safety limit"
+            }
             val result = tensor?.dataAsFloatArray
-                ?.take(MAX_OUTPUT_ELEMENTS)
                 ?.joinToString(prefix = "[", postfix = "]") { "%.7g".format(java.util.Locale.ROOT, it) }
             if (!result.isNullOrEmpty()) emit(InferenceEvent.Token(request.id, result))
             emit(
@@ -149,6 +156,7 @@ private class ExecuTorchRuntimeSession(
 
     private companion object {
         const val MAX_INPUT_ELEMENTS = 16_384
-        const val MAX_OUTPUT_ELEMENTS = 1_000_000
+        const val MAX_OUTPUT_ELEMENTS = 1_000_000L
+        const val MAX_OUTPUTS = 8
     }
 }

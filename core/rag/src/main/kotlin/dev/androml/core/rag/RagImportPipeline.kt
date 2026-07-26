@@ -112,7 +112,8 @@ class RagImportPipeline(
     private fun parseOfficeZip(bytes: ByteArray): String {
         val output = StringBuilder()
         var entries = 0
-        var extracted = 0L
+        var expanded = 0L
+        var textBytes = 0L
         ZipInputStream(bytes.inputStream()).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
@@ -121,11 +122,20 @@ class RagImportPipeline(
                 if (entry.isDirectory) continue
                 val entryName = entry.name.replace('\\', '/')
                 if (entryName.contains("..")) throw RagImportException("document archive contains an unsafe path")
-                if (!isTextEntry(entryName)) continue
-                val content = readZipEntryBounded(zip, MAX_ZIP_ENTRY_BYTES)
-                extracted += content.size
-                if (extracted > MAX_ZIP_EXTRACTED_BYTES) throw RagImportException("document archive extracts too much data")
-                output.append(' ').append(stripMarkup(content.toString(Charsets.UTF_8)))
+                if (isTextEntry(entryName)) {
+                    val content = readZipEntryBounded(zip, MAX_ZIP_TEXT_ENTRY_BYTES)
+                    expanded += content.size
+                    textBytes += content.size
+                    if (textBytes > MAX_ZIP_TEXT_BYTES) {
+                        throw RagImportException("document archive contains too much text data")
+                    }
+                    output.append(' ').append(stripMarkup(content.toString(Charsets.UTF_8)))
+                } else {
+                    expanded += drainZipEntryBounded(zip, MAX_ZIP_BINARY_ENTRY_BYTES)
+                }
+                if (expanded > MAX_ZIP_EXPANDED_BYTES) {
+                    throw RagImportException("document archive extracts too much data")
+                }
             }
         }
         return output.toString()
@@ -145,6 +155,18 @@ class RagImportPipeline(
         return output.toByteArray()
     }
 
+    private fun drainZipEntryBounded(input: InputStream, limit: Int): Long {
+        val buffer = ByteArray(8 * 1024)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read == -1) break
+            total += read
+            if (total > limit) throw RagImportException("document archive binary entry is too large")
+        }
+        return total
+    }
+
     private fun parsePdf(bytes: ByteArray): String {
         val raw = bytes.toString(Charsets.ISO_8859_1)
         val textOperators = Regex("\\(([^()]*)\\)\\s*T[Jj]")
@@ -157,16 +179,55 @@ class RagImportPipeline(
         }
     }
 
-    private fun stripMarkup(raw: String): String = raw
-        .replace(Regex("(?is)<script[^>]*>.*?</script>"), " ")
-        .replace(Regex("(?is)<style[^>]*>.*?</style>"), " ")
-        .replace(Regex("<[^>]+>"), " ")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
+    /** Single-pass markup extraction. It never backtracks over attacker-controlled '<' runs. */
+    private fun stripMarkup(raw: String): String {
+        val out = StringBuilder(raw.length)
+        var i = 0
+        var suppressed: String? = null
+        while (i < raw.length) {
+            if (suppressed != null) {
+                val close = raw.indexOf("</${suppressed}>", i, ignoreCase = true)
+                if (close < 0) break
+                i = close + suppressed.length + 3
+                suppressed = null
+                out.append(' ')
+                continue
+            }
+            if (raw[i] == '<') {
+                val end = raw.indexOf('>', i + 1)
+                if (end < 0) {
+                    // The remaining malformed tag-like text has no terminator. Stop in
+                    // one pass rather than rescanning the same suffix for every '<'.
+                    while (i < raw.length) {
+                        out.append(if (raw[i] == '<') ' ' else raw[i])
+                        i += 1
+                    }
+                    break
+                }
+                val tag = raw.substring(i + 1, end).trimStart().lowercase(Locale.ROOT)
+                when {
+                    tag.startsWith("script") && (tag.length == 6 || tag[6].isWhitespace() || tag[6] == '>') -> suppressed = "script"
+                    tag.startsWith("style") && (tag.length == 5 || tag[5].isWhitespace() || tag[5] == '>') -> suppressed = "style"
+                }
+                i = end + 1
+                out.append(' ')
+            } else if (raw[i] == '&') {
+                val end = raw.indexOf(';', i + 1)
+                if (end in (i + 2)..(i + 12)) {
+                    out.append(decodeEntity(raw.substring(i + 1, end)))
+                    i = end + 1
+                } else { out.append(raw[i++]) }
+            } else out.append(raw[i++])
+        }
+        return out.toString()
+    }
+
+    private fun decodeEntity(entity: String): String = when (entity.lowercase(Locale.ROOT)) {
+        "nbsp" -> " "; "amp" -> "&"; "lt" -> "<"; "gt" -> ">"; "quot" -> "\""; "#39" -> "'"
+        else -> if (entity.startsWith("#x", true)) entity.substring(2).toIntOrNull(16)?.toChar()?.toString() ?: "&$entity;"
+        else if (entity.startsWith("#")) entity.substring(1).toIntOrNull()?.toChar()?.toString() ?: "&$entity;"
+        else "&$entity;"
+    }
 
     private fun normalize(text: String): String = text
         .replace('\u0000', ' ')
@@ -185,7 +246,9 @@ class RagImportPipeline(
     private companion object {
         const val MAX_EXTRACTED_CHARS = 2 * 1024 * 1024
         const val MAX_ZIP_ENTRIES = 512
-        const val MAX_ZIP_ENTRY_BYTES = 4 * 1024 * 1024
-        const val MAX_ZIP_EXTRACTED_BYTES = 16L * 1024L * 1024L
+        const val MAX_ZIP_TEXT_ENTRY_BYTES = 4 * 1024 * 1024
+        const val MAX_ZIP_BINARY_ENTRY_BYTES = 64 * 1024 * 1024
+        const val MAX_ZIP_TEXT_BYTES = 16L * 1024L * 1024L
+        const val MAX_ZIP_EXPANDED_BYTES = 128L * 1024L * 1024L
     }
 }

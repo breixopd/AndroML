@@ -23,6 +23,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.engine.sslConnector
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.origin
 import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.respondText
 import io.ktor.server.response.respondTextWriter
@@ -295,6 +296,7 @@ class AndroMlApiServer(
     private val features: ApiFeatureGateway = ApiFeatureGateway.Empty,
 ) {
     private val authenticator = ApiKeyAuthenticator()
+    private val authAttemptLimiter = ApiAuthAttemptLimiter()
     private var engine: EmbeddedServer<*, *>? = null
     private val effectiveSecurityPolicy: ApiSecurityPolicy by lazy {
         securityPolicy ?: ApiSecurityPolicy(tlsMaterial?.trustedClientFingerprints.orEmpty())
@@ -757,7 +759,18 @@ class AndroMlApiServer(
             ?.removePrefix("Bearer ")
             ?.takeIf { it.length <= 256 }
         val auth: ApiAuthResult? = token?.let {
-            authenticator.authenticate(it, apiKeys(), scope)
+            val source = call.request.origin.remoteHost
+            if (!authAttemptLimiter.tryAcquire(source)) {
+                call.respondText("{\"error\":\"authentication rate limited\"}", status = HttpStatusCode.TooManyRequests)
+                return false
+            }
+            try {
+                authenticator.authenticate(it, apiKeys(), scope).also { result ->
+                    if (result == null) authAttemptLimiter.recordFailure(source)
+                }
+            } finally {
+                authAttemptLimiter.release(source)
+            }
         }
         val peer = if (config.bindMode == BindMode.Lan) peerFrom(call) else null
         val decision = effectiveSecurityPolicy.evaluate(config.bindMode, requestClass, peer = peer, apiAuth = auth)

@@ -230,7 +230,7 @@ class FakeRuntimeAdapter(
         return RuntimeCompatibilityReport(
             compatible = reasons.isEmpty(),
             reasons = reasons,
-            estimatedPeakMemoryBytes = model.estimatedWorkingSetBytes + descriptor.memoryOverheadBytes,
+            estimatedPeakMemoryBytes = descriptor.estimatedPeakMemoryBytes(model),
         )
     }
 

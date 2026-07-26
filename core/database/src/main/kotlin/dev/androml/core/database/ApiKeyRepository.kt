@@ -6,11 +6,20 @@ import dev.androml.core.api.ApiKeyRecord
 import dev.androml.core.api.ApiScope
 import dev.androml.core.api.GeneratedApiKey
 import java.util.Locale
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class ApiKeyRepository(
     private val dao: ApiKeyDao,
     private val nowEpochMillis: () -> Long = { System.currentTimeMillis() },
 ) {
+    private val mutationLock = Mutex()
+
+    companion object {
+        const val MAX_STORED_KEYS = 64
+        const val MAX_ACTIVE_KEYS = 32
+    }
+
     suspend fun snapshot(): List<ApiKeyRecord> =
         dao.list().map(ApiKeyStorageMapper::toDomain)
 
@@ -18,7 +27,9 @@ class ApiKeyRepository(
         displayName: String,
         scopes: Set<ApiScope>,
         expiresAtEpochMillis: Long? = null,
-    ): GeneratedApiKey {
+    ): GeneratedApiKey = mutationLock.withLock {
+        check(dao.countAll() < MAX_STORED_KEYS) { "API key storage limit reached" }
+        check(dao.countActive(nowEpochMillis()) < MAX_ACTIVE_KEYS) { "active API key limit reached" }
         val generated = ApiKeyCodec.generate(
             displayName = displayName,
             scopes = scopes,
@@ -26,7 +37,7 @@ class ApiKeyRepository(
             nowEpochMillis = nowEpochMillis(),
         )
         dao.insert(ApiKeyStorageMapper.toEntity(generated.record))
-        return generated
+        generated
     }
 
     suspend fun revoke(id: ApiKeyId, revokedAtEpochMillis: Long = nowEpochMillis()) {

@@ -118,6 +118,10 @@ class ApprovalStateCodecTest {
         override suspend fun expired(nowEpochMillis: Long): List<PendingApprovalEntity> =
             rows.values.filter { it.expiresAtEpochMillis <= nowEpochMillis }
 
+        override suspend fun countAll(): Int = rows.size
+
+        override suspend fun totalChunks(): Int = rows.values.sumOf(PendingApprovalEntity::chunkCount)
+
         override suspend fun deleteExpired(nowEpochMillis: Long): Int =
             expired(nowEpochMillis).count { rows.remove(it.approvalId) != null }
     }

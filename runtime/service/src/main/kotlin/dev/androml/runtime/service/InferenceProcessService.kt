@@ -24,20 +24,40 @@ import dev.androml.runtime.api.TensorDataType
 import dev.androml.runtime.api.TensorInput
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.Dispatchers.IO
 
 /** Non-exported, network-free process boundary for runtime execution. */
 class InferenceProcessService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val sessions: ConcurrentMap<String, ActiveSession> = ConcurrentHashMap()
+    private val admissionLock = Any()
+    private var pendingSessions = 0
+    private val activeJobs = AtomicInteger(0)
     private val messenger = Messenger(InferenceHandler())
+    private val idleReaper = serviceScope.launch {
+        while (true) {
+            delay(IDLE_REAP_INTERVAL_MS)
+            val cutoff = System.currentTimeMillis() - SESSION_IDLE_TIMEOUT_MS
+            sessions.entries
+                .filter { (_, session) -> session.jobs.isEmpty() && session.lastUsed() <= cutoff }
+                .forEach { (id, session) ->
+                    if (sessions.remove(id, session)) session.close()
+                }
+        }
+    }
 
     /** The service owns adapter construction so callers cannot inject executable code. */
     private fun registry(modelFile: ParcelFileDescriptor): RuntimeRegistry =
@@ -48,10 +68,12 @@ class InferenceProcessService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
 
     override fun onDestroy() {
-        sessions.values.forEach { it.close() }
+        sessions.values.forEach { it.requestClose() }
         sessions.clear()
+        idleReaper.cancel()
         serviceScope.cancel()
         super.onDestroy()
+        killRuntimeProcess()
     }
 
     private inner class InferenceHandler : Handler(Looper.getMainLooper()) {
@@ -103,28 +125,52 @@ class InferenceProcessService : Service() {
             sendFailure(replyTo, null, null, InferenceErrorCode.InvalidRequest, "invalid runtime configuration")
             return
         }
+        synchronized(admissionLock) {
+            if (sessions.size + pendingSessions >= MAX_SESSIONS) {
+                modelFile?.close()
+                sendFailure(replyTo, null, null, InferenceErrorCode.RuntimeUnavailable, "runtime is busy")
+                return
+            }
+            pendingSessions += 1
+        }
         serviceScope.launch {
+            val openFinished = AtomicBoolean(false)
+            val openWatchdog = serviceScope.launch {
+                delay(OPEN_SESSION_TIMEOUT_MS)
+                if (openFinished.compareAndSet(false, true)) killRuntimeProcess()
+            }
             val model = ModelRequirements(
                 workload = workload,
                 weightBytes = weightBytes,
                 kvCacheBytesPerToken = kvBytes,
                 contextTokens = contextTokens,
             )
+            var openedSession: RuntimeSession? = null
             val session = try {
-                withTimeout(60_000L) {
-                    val descriptor = modelFile ?: throw IllegalArgumentException("model file is required")
-                    registry(descriptor).adapterFor(runtimeId).openSession(model, configuration)
+                val descriptor = modelFile ?: throw IllegalArgumentException("model file is required")
+                registry(descriptor).adapterFor(runtimeId).openSession(model, configuration).also {
+                    openedSession = it
                 }
             } catch (_: CancellationException) {
+                runCatching { openedSession?.close() }
                 modelFile?.close()
+                synchronized(admissionLock) { pendingSessions -= 1 }
                 return@launch
             } catch (_: Exception) {
+                runCatching { openedSession?.close() }
                 modelFile?.close()
+                synchronized(admissionLock) { pendingSessions -= 1 }
                 sendFailure(replyTo, null, null, InferenceErrorCode.RuntimeUnavailable, "runtime cannot serve model")
                 return@launch
+            } finally {
+                openFinished.set(true)
+                openWatchdog.cancel()
             }
             val active = ActiveSession(session, replyTo, modelFile)
-            sessions[session.id.value] = active
+            synchronized(admissionLock) {
+                pendingSessions -= 1
+                sessions[session.id.value] = active
+            }
             send(
                 replyTo,
                 InferenceServiceProtocol.EVENT_SESSION_OPENED,
@@ -147,26 +193,75 @@ class InferenceProcessService : Service() {
             sendFailure(replyTo, null, sessionId.value, InferenceErrorCode.SessionUnavailable, "session unavailable")
             return
         }
+        if (active.isClosing()) {
+            sendFailure(replyTo, null, sessionId.value, InferenceErrorCode.SessionUnavailable, "session is closing")
+            return
+        }
         active.replyTo = replyTo
+        active.touch()
         val request = parseRequest(data) ?: run {
             sendFailure(replyTo, null, sessionId.value, InferenceErrorCode.InvalidRequest, "invalid inference request")
             return
         }
+        if (active.jobs.size >= MAX_JOBS_PER_SESSION) {
+            sendFailure(replyTo, request.id.value, sessionId.value, InferenceErrorCode.RuntimeUnavailable, "runtime is busy")
+            return
+        }
+        if (activeJobs.incrementAndGet() > MAX_GLOBAL_JOBS) {
+            activeJobs.decrementAndGet()
+            sendFailure(replyTo, request.id.value, sessionId.value, InferenceErrorCode.RuntimeUnavailable, "runtime is busy")
+            return
+        }
+        val terminalSent = AtomicBoolean(false)
         val job = serviceScope.launch(start = CoroutineStart.LAZY) {
-                try {
-                    active.session.generate(request) { event -> sendEvent(active.replyTo, sessionId, event) }
-                } catch (_: CancellationException) {
+            val timeoutWatcher = serviceScope.launch {
+                delay(GENERATION_TIMEOUT_MS)
+                if (active.jobs.containsKey(request.id.value) && terminalSent.compareAndSet(false, true)) {
+                    active.session.cancel(request.id)
+                    sendEvent(
+                        active.replyTo,
+                        sessionId,
+                        InferenceEvent.Failed(
+                            request.id,
+                            InferenceErrorCode.TimedOut,
+                            "inference timed out",
+                        ),
+                    )
+                    delay(PROCESS_KILL_GRACE_MS)
+                    killRuntimeProcess()
+                }
+            }
+            try {
+                withContext(IO) {
+                    active.session.generate(request) { event ->
+                        val terminal = event is InferenceEvent.Completed ||
+                            event is InferenceEvent.Failed ||
+                            event is InferenceEvent.Cancelled
+                        if (!terminal || terminalSent.compareAndSet(false, true)) {
+                            sendEvent(active.replyTo, sessionId, event)
+                        }
+                    }
+                }
+            } catch (_: CancellationException) {
+                if (terminalSent.compareAndSet(false, true)) {
                     sendEvent(active.replyTo, sessionId, InferenceEvent.Cancelled(request.id))
-                } catch (_: Exception) {
+                }
+            } catch (_: Exception) {
+                if (terminalSent.compareAndSet(false, true)) {
                     sendEvent(
                         active.replyTo,
                         sessionId,
                         InferenceEvent.Failed(request.id, InferenceErrorCode.RuntimeCrashed, "runtime execution failed"),
                     )
-                } finally {
-                    active.jobs.remove(request.id.value)
                 }
+            } finally {
+                timeoutWatcher.cancel()
             }
+        }
+        job.invokeOnCompletion {
+            active.jobs.remove(request.id.value, job)
+            activeJobs.decrementAndGet()
+        }
         if (active.jobs.putIfAbsent(request.id.value, job) != null) {
             job.cancel()
             sendFailure(replyTo, request.id.value, sessionId.value, InferenceErrorCode.InvalidRequest, "request already running")
@@ -181,21 +276,29 @@ class InferenceProcessService : Service() {
         val active = sessions[sessionId.value] ?: return
         active.replyTo = replyTo
         active.session.cancel(requestId)
-        val job = active.jobs.remove(requestId.value)
+        val job = active.jobs[requestId.value]
         if (job == null) {
             sendEvent(replyTo, sessionId, InferenceEvent.Cancelled(requestId))
         } else {
             job.cancel()
+            serviceScope.launch {
+                delay(CANCEL_REQUEST_GRACE_MS)
+                if (active.jobs[requestId.value] === job) killRuntimeProcess()
+            }
         }
     }
 
     private fun closeSession(data: Bundle, replyTo: Messenger) {
         val sessionId = parseSessionId(data) ?: return
-        sessions.remove(sessionId.value)?.close()
-        send(replyTo, InferenceServiceProtocol.EVENT_SESSION_CLOSED, Bundle().apply {
-            putInt(InferenceServiceProtocol.VERSION_KEY, InferenceServiceProtocol.PROTOCOL_VERSION)
-            putString(InferenceServiceProtocol.SESSION_ID_KEY, sessionId.value)
-        })
+        val active = sessions.remove(sessionId.value)
+        active?.requestClose()
+        serviceScope.launch(IO) {
+            active?.close()
+            send(replyTo, InferenceServiceProtocol.EVENT_SESSION_CLOSED, Bundle().apply {
+                putInt(InferenceServiceProtocol.VERSION_KEY, InferenceServiceProtocol.PROTOCOL_VERSION)
+                putString(InferenceServiceProtocol.SESSION_ID_KEY, sessionId.value)
+            })
+        }
     }
 
     private fun sendHealth(replyTo: Messenger) {
@@ -302,18 +405,59 @@ class InferenceProcessService : Service() {
         }
     }
 
-    private class ActiveSession(
+    private fun killRuntimeProcess() {
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }
+
+    private inner class ActiveSession(
         val session: RuntimeSession,
         @Volatile var replyTo: Messenger,
         private val modelFile: ParcelFileDescriptor?,
     ) {
         val jobs: ConcurrentMap<String, kotlinx.coroutines.Job> = ConcurrentHashMap()
+        private val lastUsedEpochMillis = AtomicLong(System.currentTimeMillis())
 
-        fun close() {
-            jobs.values.forEach { it.cancel() }
-            jobs.clear()
-            session.close()
-            modelFile?.close()
+        fun isClosing(): Boolean = closing.get()
+        fun touch() = lastUsedEpochMillis.set(System.currentTimeMillis())
+        fun lastUsed(): Long = lastUsedEpochMillis.get()
+
+        fun requestClose() {
+            if (closing.compareAndSet(false, true)) {
+                jobs.keys.forEach { requestId ->
+                    runCatching { session.cancel(InferenceRequestId.parse(requestId)) }
+                }
+                jobs.values.toList().forEach { it.cancel() }
+            }
         }
+
+        suspend fun close() {
+            requestClose()
+            val stopped = withTimeoutOrNull(CLOSE_SESSION_GRACE_MS) {
+                jobs.values.toList().forEach { it.join() }
+                true
+            } ?: false
+            if (!stopped) killRuntimeProcess()
+            jobs.clear()
+            if (closed.compareAndSet(false, true)) {
+                runCatching { session.close() }
+                runCatching { modelFile?.close() }
+            }
+        }
+
+        private val closing = AtomicBoolean(false)
+        private val closed = AtomicBoolean(false)
+    }
+
+    private companion object {
+        const val MAX_SESSIONS = 2
+        const val MAX_GLOBAL_JOBS = 2
+        const val MAX_JOBS_PER_SESSION = 1
+        const val GENERATION_TIMEOUT_MS = 120_000L
+        const val OPEN_SESSION_TIMEOUT_MS = 60_000L
+        const val CLOSE_SESSION_GRACE_MS = 5_000L
+        const val CANCEL_REQUEST_GRACE_MS = 5_000L
+        const val PROCESS_KILL_GRACE_MS = 100L
+        const val SESSION_IDLE_TIMEOUT_MS = 5 * 60_000L
+        const val IDLE_REAP_INTERVAL_MS = 60_000L
     }
 }

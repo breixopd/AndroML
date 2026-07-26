@@ -3,6 +3,7 @@ package dev.androml.cluster.core
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.junit.Assert.assertThrows
 
 class ClusterModelTransferCodecTest {
     @Test
@@ -43,5 +44,22 @@ class ClusterModelTransferCodecTest {
             revision = "b".repeat(40),
             path = "model.gguf",
         )
+    }
+
+    @Test
+    fun rejectsImplausiblyLargeTransferDeclaration() {
+        assertThrows(IllegalArgumentException::class.java) {
+            ClusterModelTransferChunk(
+                transferId = "transfer-large",
+                artifactHash = ContentHash.parse("a".repeat(64)),
+                totalSizeBytes = ClusterModelTransferChunk.MAX_ARTIFACT_BYTES + 1,
+                offsetBytes = 0,
+                chunk = byteArrayOf(1),
+                finalChunk = false,
+                modelId = "model",
+                revision = "b".repeat(40),
+                path = "model.gguf",
+            )
+        }
     }
 }

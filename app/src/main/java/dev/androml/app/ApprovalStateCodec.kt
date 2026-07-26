@@ -25,6 +25,8 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.nio.charset.StandardCharsets
 import java.util.Base64
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 sealed interface StoredApproval {
     val approval: ToolApproval
@@ -206,6 +208,8 @@ class DurableApprovalStore(
     private val secretStore: SecretStore,
     private val nowEpochMillis: () -> Long = { System.currentTimeMillis() },
 ) {
+    private val consumeLock = Mutex()
+
     suspend fun saveTool(
         approval: ToolApproval,
         toolId: ToolId,
@@ -235,21 +239,27 @@ class DurableApprovalStore(
         consume(approvalId, "agent") as? StoredApproval.Agent
 
     private suspend fun consume(approvalId: String, expectedKind: String): StoredApproval? {
-        cleanupExpired()
-        val entity = dao.find(approvalId) ?: return null
-        if (entity.kind != expectedKind) return null
-        val payload = readChunks(entity)
-        val decoded = runCatching { ApprovalStateCodec.decode(payload) }.getOrElse {
+        return consumeLock.withLock {
+            cleanupExpiredLocked()
+            val entity = dao.find(approvalId) ?: return@withLock null
+            if (entity.kind != expectedKind) return@withLock null
+            val payload = readChunks(entity)
+            val decoded = runCatching { ApprovalStateCodec.decode(payload) }.getOrElse {
+                removeEntityAndSecrets(entity)
+                throw IllegalStateException("stored approval payload is corrupt", it)
+            }
             removeEntityAndSecrets(entity)
-            throw IllegalStateException("stored approval payload is corrupt", it)
+            require(decoded.approval.approvalId == entity.approvalId) { "stored approval ID does not match its index" }
+            require(decoded.approval.argumentHash == entity.argumentHash) { "stored approval hash does not match its index" }
+            decoded
         }
-        removeEntityAndSecrets(entity)
-        require(decoded.approval.approvalId == entity.approvalId) { "stored approval ID does not match its index" }
-        require(decoded.approval.argumentHash == entity.argumentHash) { "stored approval hash does not match its index" }
-        return decoded
     }
 
     suspend fun cleanupExpired() {
+        consumeLock.withLock { cleanupExpiredLocked() }
+    }
+
+    private suspend fun cleanupExpiredLocked() {
         val now = nowEpochMillis()
         dao.expired(now).forEach { removeEntityAndSecrets(it) }
     }
@@ -259,7 +269,7 @@ class DurableApprovalStore(
         kind: String,
         toolId: ToolId,
         payload: String,
-    ) {
+    ) = consumeLock.withLock {
         require(payload.toByteArray(StandardCharsets.UTF_8).size <= MAX_PAYLOAD_BYTES) {
             "approval continuation exceeds the safety limit"
         }
@@ -268,7 +278,15 @@ class DurableApprovalStore(
         val encoded = Base64.getEncoder().encodeToString(payload.toByteArray(StandardCharsets.UTF_8))
         val chunks = encoded.chunked(CHUNK_CHARS)
         require(chunks.size in 1..MAX_CHUNKS) { "approval continuation has too many chunks" }
+        cleanupExpiredLocked()
         val previous = dao.find(approvalId)
+        check(previous != null || dao.countAll() < MAX_PENDING_APPROVALS) {
+            "pending approval limit reached"
+        }
+        val existingChunks = previous?.chunkCount ?: 0
+        check(chunks.size <= MAX_TOTAL_CHUNKS - (dao.totalChunks() - existingChunks)) {
+            "pending approval storage limit reached"
+        }
         if (previous != null) removeEntityAndSecrets(previous)
         try {
             chunks.forEachIndexed { index, chunk -> secretStore.write("$prefix.$index", chunk) }
@@ -313,5 +331,7 @@ class DurableApprovalStore(
         const val CHUNK_CHARS = 8 * 1024
         const val MAX_CHUNKS = 768
         const val MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
+        const val MAX_PENDING_APPROVALS = 64
+        const val MAX_TOTAL_CHUNKS = 2_048
     }
 }

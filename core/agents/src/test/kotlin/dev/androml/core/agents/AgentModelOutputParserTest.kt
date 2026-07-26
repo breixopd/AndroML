@@ -24,6 +24,12 @@ class AgentModelOutputParserTest {
         assertEquals(AgentModelDecision.Final(output), AgentModelOutputParser.parse(output))
     }
 
+    @Test
+    fun treatsExcessivelyNestedJsonAsFinalTextWithoutRecursiveParsing() {
+        val output = "{".repeat(64) + "}".repeat(64)
+        assertEquals(AgentModelDecision.Final(output), AgentModelOutputParser.parse(output))
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun rejectsUnsafeToolIdInEnvelope() {
         AgentModelOutputParser.parse(

@@ -419,6 +419,33 @@ class WorkflowController(
         nodeId: NodeId,
         input: WorkflowValue,
     ): WorkflowRunSnapshot = withContext(Dispatchers.IO) {
+        val approvalNode = definition.nodes.filterIsInstance<dev.androml.core.workflow.ApprovalNode>()
+            .firstOrNull { it.id == nodeId }
+            ?: return@withContext WorkflowRunSnapshot(
+                runId, definition.id, definition.version, WorkflowRunStatus.Failed,
+                error = "approval node is not part of the workflow",
+            )
+        val events = eventStore.read(runId)
+        val requested = events.asReversed().firstOrNull {
+            val event = it.event as? dev.androml.core.workflow.WorkflowEvent.ApprovalRequested
+            event?.nodeId == nodeId
+        }
+        val status = events.asReversed().firstOrNull {
+            it.event is dev.androml.core.workflow.WorkflowEvent.StatusChanged
+        }?.event as? dev.androml.core.workflow.WorkflowEvent.StatusChanged
+        if (requested == null || status?.status != WorkflowRunStatus.WaitingForApproval) {
+            return@withContext WorkflowRunSnapshot(
+                runId, definition.id, definition.version, WorkflowRunStatus.Failed,
+                error = "workflow has no pending approval for this node",
+            )
+        }
+        val granted = allToolScopes()
+        if (!approvalNode.requiredScopes.all { raw -> granted.any { it.value == raw } }) {
+            return@withContext WorkflowRunSnapshot(
+                runId, definition.id, definition.version, WorkflowRunStatus.Failed,
+                error = "required approval scopes are unavailable",
+            )
+        }
         val approvalKey = ApprovalKey(runId, nodeId)
         val installedModels = catalogRepository.installedArtifactHashes().map(ContentHash::value).toSet()
         val executor = WorkflowExecutor(

@@ -47,7 +47,9 @@ data class ClusterModelTransferChunk(
 
     companion object {
         const val MAX_CHUNK_BYTES = 512 * 1024
-        const val MAX_ARTIFACT_BYTES = 1L shl 40
+        // A transfer is staged on-device; reject implausibly large declarations before
+        // allocating/creating a resumable artifact.
+        const val MAX_ARTIFACT_BYTES = 8L shl 30
         private val TRANSFER_ID_PATTERN = Regex("[a-z0-9][a-z0-9._-]{0,127}")
         private val MODEL_ID_PATTERN = Regex("[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?")
         private val REVISION_PATTERN = Regex("[0-9a-f]{40}")
@@ -144,9 +146,13 @@ object ClusterModelTransferCodec {
     private fun parse(raw: ByteArray, maxBytes: Int): JsonObject {
         require(raw.size <= maxBytes) { "model transfer payload exceeds the safety limit" }
         return try {
-            Json.parseToJsonElement(raw.toString(Charsets.UTF_8)).jsonObject
+            val text = raw.toString(Charsets.UTF_8)
+            validateClusterJson(text)
+            Json.parseToJsonElement(text).jsonObject
         } catch (error: Exception) {
             throw IllegalArgumentException("model transfer payload is invalid", error)
+        } catch (error: StackOverflowError) {
+            throw IllegalArgumentException("model transfer payload is too deeply nested", error)
         }
     }
 

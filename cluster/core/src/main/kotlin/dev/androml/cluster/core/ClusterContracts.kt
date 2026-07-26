@@ -214,11 +214,11 @@ class ClusterRouter(
         val capabilities = node.peer.capabilities
         val ramHeadroom = (capabilities.availableRamBytes - request.requiredRamBytes)
             .coerceAtLeast(0L)
-            .toDouble()
-        val queuePenalty = capabilities.queueDepth.toDouble() * 10_000.0
-        val thermalPenalty = capabilities.thermalSeverity.toDouble() * 2_000.0
-        val batteryBonus = if (capabilities.charging) 500.0 else capabilities.batteryPercent.toDouble()
-        val localityBonus = if (node.isLocal) 100.0 else 0.0
+            .toDouble() / (1024.0 * 1024.0)
+        val queuePenalty = capabilities.queueDepth.toDouble() * 256.0
+        val thermalPenalty = capabilities.thermalSeverity.toDouble() * 512.0
+        val batteryBonus = if (capabilities.charging) 128.0 else capabilities.batteryPercent.toDouble()
+        val localityBonus = if (node.isLocal) 64.0 else 0.0
         return ramHeadroom - queuePenalty - thermalPenalty + batteryBonus + localityBonus
     }
 }

@@ -7,6 +7,7 @@ import dev.androml.cluster.core.JobAttemptKey
 import dev.androml.cluster.core.JobState
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.fail
 import org.junit.Test
 
 class ClusterJobLedgerRepositoryTest {
@@ -40,6 +41,48 @@ class ClusterJobLedgerRepositoryTest {
         assertEquals(BeginAttempt.Started, ledger.begin(key, nowEpochMillis = 2_001L, leaseMillis = 1_000L))
     }
 
+    @Test
+    fun capacityFailsClosedWhileReplayRecordsAreWithinRetentionWindow() {
+        val now = 2 * 24 * 60 * 60 * 1_000L
+        val dao = FakeDao()
+        repeat(256) { index ->
+            dao.replace(terminalEntity("recent-$index", updatedAtEpochMillis = now - 1_000L))
+        }
+
+        val ledger = ClusterJobLedgerRepository(dao) { now }
+        try {
+            ledger.begin(JobAttemptKey(ClusterJobId.parse("new-job"), 1))
+            fail("recent replay records must not be pruned to admit a new attempt")
+        } catch (_: IllegalStateException) {
+            // Capacity is deliberately fail-closed for the replay-retention window.
+        }
+        assertEquals(256, dao.countAll())
+    }
+
+    @Test
+    fun capacityPrunesOnlyTerminalRecordsPastReplayRetention() {
+        val now = 2 * 24 * 60 * 60 * 1_000L
+        val dao = FakeDao()
+        repeat(256) { index ->
+            dao.replace(terminalEntity("old-$index", updatedAtEpochMillis = 0L))
+        }
+
+        val ledger = ClusterJobLedgerRepository(dao) { now }
+        assertEquals(BeginAttempt.Started, ledger.begin(JobAttemptKey(ClusterJobId.parse("new-job"), 1)))
+        assertEquals(225, dao.countAll())
+    }
+
+    private fun terminalEntity(jobId: String, updatedAtEpochMillis: Long) =
+        ClusterJobAttemptEntity(
+            jobId = jobId,
+            attempt = 1,
+            state = JobState.Completed.name,
+            outputHash = "0".repeat(64),
+            output = null,
+            leaseExpiresAtEpochMillis = Long.MAX_VALUE,
+            updatedAtEpochMillis = updatedAtEpochMillis,
+        )
+
     private class FakeDao : ClusterJobAttemptDao {
         private val rows = mutableMapOf<Pair<String, Int>, ClusterJobAttemptEntity>()
 
@@ -51,6 +94,32 @@ class ClusterJobLedgerRepositoryTest {
 
         override fun replace(entity: ClusterJobAttemptEntity) {
             rows[entity.jobId to entity.attempt] = entity
+        }
+
+        override fun countAll(): Int = rows.size
+
+        override fun deleteTerminalOlderThan(cutoffEpochMillis: Long, limit: Int): Int {
+            val keys = rows.entries
+                .filter {
+                    it.value.state != JobState.Running.name &&
+                        it.value.updatedAtEpochMillis <= cutoffEpochMillis
+                }
+                .sortedBy { it.value.updatedAtEpochMillis }
+                .take(limit)
+                .map { it.key }
+            keys.forEach(rows::remove)
+            return keys.size
+        }
+
+        override fun deleteExpiredRunning(nowEpochMillis: Long): Int {
+            val keys = rows.entries
+                .filter {
+                    it.value.state == JobState.Running.name &&
+                        it.value.leaseExpiresAtEpochMillis <= nowEpochMillis
+                }
+                .map { it.key }
+            keys.forEach(rows::remove)
+            return keys.size
         }
     }
 }

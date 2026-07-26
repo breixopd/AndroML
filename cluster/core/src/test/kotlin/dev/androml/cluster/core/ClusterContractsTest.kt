@@ -13,6 +13,8 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class ClusterContractsTest {
     private val fingerprint = CertificateFingerprint.parse("a".repeat(64))
@@ -22,14 +24,14 @@ class ClusterContractsTest {
         val request = inferenceRequest(now = 60_000L)
         val local = node(
             id = "local",
-            availableRamBytes = 3_000L,
+            availableRamBytes = 3L * 1024L * 1024L * 1024L,
             queueDepth = 1,
             now = 60_000L,
             isLocal = true,
         )
         val remote = node(
             id = "remote",
-            availableRamBytes = 8_000L,
+            availableRamBytes = 8L * 1024L * 1024L * 1024L,
             queueDepth = 0,
             now = 60_000L,
         )
@@ -140,6 +142,46 @@ class ClusterContractsTest {
 
         assertEquals(ClusterExecutionStatus.Rejected, response.status)
         assertEquals(0, executions)
+    }
+
+    @Test
+    fun farFutureDeadlineIsRejected() {
+        val executor = IdempotentClusterExecutor(
+            ledger = InMemoryClusterJobLedger(), nowEpochMillis = { 60_000L },
+            handler = ClusterExecutionHandler { byteArrayOf(1) },
+        )
+        assertEquals(ClusterExecutionStatus.Rejected, executor.execute(executionRequest(byteArrayOf(1), deadline = 60_000L + 11 * 60_000L)).status)
+    }
+
+    @Test
+    fun globalAndPerPeerConcurrencyAreBounded() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val executor = IdempotentClusterExecutor(
+            ledger = InMemoryClusterJobLedger(), nowEpochMillis = { 60_000L }, maxConcurrentExecutions = 1,
+            handler = ClusterExecutionHandler { entered.countDown(); release.await(2, TimeUnit.SECONDS); byteArrayOf(1) },
+        )
+        val first = Thread { executor.execute(executionRequest(byteArrayOf(1))) }.apply { start() }
+        assertTrue(entered.await(1, TimeUnit.SECONDS))
+        val second = executor.execute(executionRequest(byteArrayOf(2)))
+        assertEquals(ClusterExecutionStatus.Rejected, second.status)
+        release.countDown()
+        first.join(2_000)
+    }
+
+    @Test
+    fun completedAttemptCannotReplayAfterLeaseAge() {
+        var now = 60_000L
+        var runs = 0
+        val ledger = InMemoryClusterJobLedger()
+        val executor = IdempotentClusterExecutor(
+            ledger = ledger, nowEpochMillis = { now }, handler = ClusterExecutionHandler { runs++; byteArrayOf(1) },
+        )
+        val request = executionRequest(byteArrayOf(1), deadline = 200_000L)
+        assertEquals(ClusterExecutionStatus.Completed, executor.execute(request).status)
+        now = 180_000L
+        assertEquals(ClusterExecutionStatus.AlreadyCompleted, executor.execute(request).status)
+        assertEquals(1, runs)
     }
 
     @Test

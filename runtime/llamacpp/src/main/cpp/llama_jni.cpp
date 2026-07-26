@@ -75,14 +75,20 @@ Java_dev_androml_runtime_llamacpp_LlamaCppNative_nativeGenerate(JNIEnv * env, jo
         llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     }
     std::string output;
+    constexpr size_t kMaxOutputChars = 1u << 20;
     const int32_t limit = std::clamp<int32_t>(max_tokens, 1, 8192);
+    output.reserve(std::min<size_t>(kMaxOutputChars, static_cast<size_t>(limit) * 8u));
     for (int32_t i = 0; i < limit && !handle->cancelled.load(); ++i) {
         const llama_token token = llama_sampler_sample(sampler, handle->context, -1);
         llama_sampler_accept(sampler, token);
         if (token == llama_vocab_eos(vocab)) break;
         char piece[4096];
         const int32_t size = llama_token_to_piece(vocab, token, piece, sizeof(piece), 0, false);
-        if (size > 0) output.append(piece, static_cast<size_t>(size));
+        if (size > 0) {
+            const size_t remaining = kMaxOutputChars - output.size();
+            output.append(piece, std::min(remaining, static_cast<size_t>(size)));
+            if (output.size() == kMaxOutputChars) break;
+        }
         auto next = llama_batch_get_one(const_cast<llama_token *>(&token), 1);
         if (llama_decode(handle->context, next) != 0) break;
     }

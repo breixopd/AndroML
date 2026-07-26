@@ -34,12 +34,53 @@ class ArtifactSizeException(
  * file is never exposed through [open] and is promoted with an atomic move when the platform
  * supports it.
  */
-class FileArtifactStore(private val root: File) {
+class FileArtifactStore(
+    private val root: File,
+    private val maxArtifactBytes: Long = DEFAULT_MAX_BYTES,
+    private val freeSpaceReserveBytes: Long = 256L * 1024L * 1024L,
+    private val stagingQuotaBytes: Long = 20L * 1024L * 1024L * 1024L,
+    private val committedQuotaBytes: Long = 32L * 1024L * 1024L * 1024L,
+) {
+    private val writeReservations = mutableMapOf<File, Long>()
+
+    init {
+        require(
+            maxArtifactBytes > 0 &&
+                freeSpaceReserveBytes >= 0 &&
+                stagingQuotaBytes > 0 &&
+                committedQuotaBytes >= maxArtifactBytes,
+        )
+    }
+
+    /** Removes abandoned resumable files and bounds disk consumed by failed downloads. */
+    fun cleanupStaging(maxAgeMillis: Long = 24L * 60L * 60L * 1000L): Long =
+        cleanupDirectory(File(root, STAGING_DIRECTORY), maxAgeMillis, Long.MAX_VALUE)
+
+    /** Removes old quarantined failures, retaining only recent evidence. */
+    fun cleanupQuarantine(maxAgeMillis: Long = 7L * 24L * 60L * 60L * 1000L): Long =
+        cleanupDirectory(File(root, QUARANTINE_DIRECTORY), maxAgeMillis, 256L * 1024L * 1024L)
+
+    private fun cleanupDirectory(directory: File, maxAgeMillis: Long, quotaBytes: Long): Long {
+        require(maxAgeMillis >= 0)
+        if (!directory.isDirectory) return 0
+        val now = System.currentTimeMillis()
+        val files = directory.listFiles().orEmpty().filter { it.isFile }.sortedBy { it.lastModified() }
+        var total = files.sumOf { it.length() }
+        var removed = 0L
+        files.forEach { file ->
+            if (now - file.lastModified() >= maxAgeMillis || total > quotaBytes) {
+                val size = file.length(); if (file.delete()) { total -= size; removed += size }
+            }
+        }
+        return removed
+    }
+    @Synchronized
     fun stage(expectedSha256: String, expectedSizeBytes: Long? = null): StagedArtifact {
         require(isSha256(expectedSha256)) { "expectedSha256 must be 64 lowercase hexadecimal characters" }
         require(expectedSizeBytes == null || expectedSizeBytes >= 0) {
             "expectedSizeBytes must be non-negative"
         }
+        expectedSizeBytes?.let { checkCapacity(it, excludedStagingFile = null) }
 
         val stagingDirectory = File(root, STAGING_DIRECTORY).apply { mkdirs() }
         val temporaryFile = File(stagingDirectory, "${UUID.randomUUID()}.partial")
@@ -50,6 +91,7 @@ class FileArtifactStore(private val root: File) {
      * Opens a durable, job-keyed partial artifact. The partial is not visible
      * through [contains] or [open] until [ResumableArtifact.commit] succeeds.
      */
+    @Synchronized
     fun beginResumable(
         key: String,
         expectedSha256: String,
@@ -60,7 +102,6 @@ class FileArtifactStore(private val root: File) {
             "expectedSha256 must be 64 lowercase hexadecimal characters"
         }
         require(expectedSizeBytes >= 0) { "expectedSizeBytes must be non-negative" }
-
         val stagingDirectory = File(root, STAGING_DIRECTORY).apply { mkdirs() }
         val partialFile = File(stagingDirectory, "$key.partial")
         if (partialFile.isFile && partialFile.length() > expectedSizeBytes) {
@@ -68,6 +109,7 @@ class FileArtifactStore(private val root: File) {
             quarantine(partialFile, "partial-size")
             throw ArtifactSizeException(expectedSizeBytes, actualSize)
         }
+        checkCapacity(expectedSizeBytes - partialFile.length(), excludedStagingFile = null)
         return ResumableArtifact(this, partialFile, expectedSha256, expectedSizeBytes)
     }
 
@@ -93,6 +135,7 @@ class FileArtifactStore(private val root: File) {
         return file
     }
 
+    @Synchronized
     internal fun commit(staged: StagedArtifact): StoredArtifact {
         check(staged.isComplete) { "staged artifact must be completely written before commit" }
 
@@ -101,6 +144,7 @@ class FileArtifactStore(private val root: File) {
         return result
     }
 
+    @Synchronized
     internal fun commitResumable(staged: ResumableArtifact): StoredArtifact {
         check(!staged.isCommitted) { "resumable artifact has already been committed" }
 
@@ -117,6 +161,10 @@ class FileArtifactStore(private val root: File) {
         check(file.isFile) { "staged artifact file does not exist" }
 
         val actualSize = file.length()
+        if (actualSize > maxArtifactBytes) {
+            quarantine(file, "maximum-size")
+            throw ArtifactSizeException(maxArtifactBytes, actualSize)
+        }
         val expectedSize = expectedSizeBytes
         if (expectedSize != null && actualSize != expectedSize) {
             quarantine(file, "size")
@@ -138,22 +186,88 @@ class FileArtifactStore(private val root: File) {
             }
             file.delete()
         } else {
+            val committedBytes = destination.parentFile
+                ?.listFiles()
+                .orEmpty()
+                .filter { it.isFile }
+                .sumOf { it.length() }
+            if (actualSize > committedQuotaBytes - committedBytes) {
+                throw IOException("committed artifact quota exceeded")
+            }
             atomicMove(file, destination)
         }
 
         return StoredArtifact(expectedSha256, actualSize)
     }
 
+    @Synchronized
     internal fun discard(file: File) {
+        writeReservations.remove(file)
         file.delete()
     }
 
     private fun artifactFile(sha256: String): File = File(File(root, ARTIFACT_DIRECTORY), sha256)
 
+    @Synchronized
+    private fun checkCapacity(size: Long, excludedStagingFile: File?) {
+        require(size <= maxArtifactBytes) { "artifact exceeds the maximum permitted size" }
+        root.mkdirs()
+        if (size > root.usableSpace - freeSpaceReserveBytes) {
+            throw IOException("insufficient free space for artifact and safety reserve")
+        }
+        val staging = File(root, STAGING_DIRECTORY)
+            .listFiles()
+            .orEmpty()
+            .filter { it.isFile && it != excludedStagingFile }
+            .sumOf { it.length() }
+        if (size > stagingQuotaBytes - staging) throw IOException("staging quota exceeded")
+    }
+
+    @Synchronized
+    private fun reserveWrite(file: File, size: Long) {
+        require(size >= 0L)
+        val current = writeReservations[file] ?: 0L
+        if (size <= current) return
+        val additional = size - current
+        root.mkdirs()
+        val alreadyReserved = writeReservations.values.sum()
+        if (additional > root.usableSpace - freeSpaceReserveBytes - alreadyReserved) {
+            throw IOException("insufficient free space for artifact and safety reserve")
+        }
+        val staging = File(root, STAGING_DIRECTORY)
+            .listFiles()
+            .orEmpty()
+            .filter { it.isFile }
+            .sumOf { it.length() }
+        if (additional > stagingQuotaBytes - staging - alreadyReserved) {
+            throw IOException("staging quota exceeded")
+        }
+        writeReservations[file] = size
+    }
+
+    @Synchronized
+    private fun writeReserved(file: File, size: Int, write: () -> Unit) {
+        require(size >= 0)
+        val current = writeReservations[file] ?: 0L
+        if (current < size) {
+            reserveWrite(file, maxOf(UNKNOWN_WRITE_RESERVATION_BYTES, size.toLong()))
+        }
+        write()
+        val remaining = requireNotNull(writeReservations[file]) - size
+        if (remaining == 0L) writeReservations.remove(file) else writeReservations[file] = remaining
+    }
+
+    @Synchronized
+    private fun releaseWriteReservation(file: File) {
+        writeReservations.remove(file)
+    }
+
     private fun quarantine(file: File, reason: String) {
+        cleanupQuarantine()
         val quarantineDirectory = File(root, QUARANTINE_DIRECTORY).apply { mkdirs() }
-        val destination = File(quarantineDirectory, "${file.name}.$reason")
+        val destination = File(quarantineDirectory, "${file.name}.$reason.${System.currentTimeMillis()}")
         atomicMove(file, destination)
+        cleanupQuarantine()
     }
 
     private fun atomicMove(source: File, destination: File) {
@@ -191,6 +305,7 @@ class FileArtifactStore(private val root: File) {
         private const val STAGING_DIRECTORY = "staging"
         private const val BUFFER_SIZE = 64 * 1024
         private const val DEFAULT_MAX_BYTES = 16L * 1024L * 1024L * 1024L
+        private const val UNKNOWN_WRITE_RESERVATION_BYTES = 64L * 1024L * 1024L
 
         private fun isSha256(value: String): Boolean =
             value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
@@ -213,11 +328,16 @@ class FileArtifactStore(private val root: File) {
         var isComplete: Boolean = false
             private set
 
-        fun copyFrom(input: InputStream, maxBytes: Long = expectedSizeBytes ?: DEFAULT_MAX_BYTES) {
+        fun copyFrom(input: InputStream, maxBytes: Long = expectedSizeBytes ?: store.maxArtifactBytes) {
             check(!isComplete) { "staged artifact has already been completed" }
             require(maxBytes >= 0) { "maxBytes must be non-negative" }
+            require(maxBytes <= store.maxArtifactBytes) { "maxBytes exceeds the artifact safety limit" }
 
             try {
+                store.reserveWrite(
+                    file,
+                    expectedSizeBytes ?: minOf(maxBytes, UNKNOWN_WRITE_RESERVATION_BYTES),
+                )
                 file.parentFile?.mkdirs()
                 file.outputStream().use { output ->
                     val buffer = ByteArray(BUFFER_SIZE)
@@ -228,7 +348,7 @@ class FileArtifactStore(private val root: File) {
                         if (read.toLong() > maxBytes - total) {
                             throw ArtifactSizeException(maxBytes, total + read)
                         }
-                        output.write(buffer, 0, read)
+                        store.writeReserved(file, read) { output.write(buffer, 0, read) }
                         total += read
                     }
                     output.flush()
@@ -243,6 +363,8 @@ class FileArtifactStore(private val root: File) {
                 store.discard(file)
                 isComplete = false
                 throw exception
+            } finally {
+                store.releaseWriteReservation(file)
             }
         }
 
@@ -287,12 +409,13 @@ class FileArtifactStore(private val root: File) {
             }
 
             val initialSize = bytesWritten
-            file.parentFile?.mkdirs()
-            RandomAccessFile(file, "rw").use { randomAccess ->
-                randomAccess.seek(initialSize)
-                val buffer = ByteArray(BUFFER_SIZE)
-                var appended = 0L
-                try {
+            store.reserveWrite(file, maxBytes)
+            try {
+                file.parentFile?.mkdirs()
+                RandomAccessFile(file, "rw").use { randomAccess ->
+                    randomAccess.seek(initialSize)
+                    val buffer = ByteArray(BUFFER_SIZE)
+                    var appended = 0L
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
@@ -302,16 +425,14 @@ class FileArtifactStore(private val root: File) {
                             randomAccess.fd.sync()
                             throw ArtifactSizeException(maxBytes, appended + read)
                         }
-                        randomAccess.write(buffer, 0, read)
+                        store.writeReserved(file, read) { randomAccess.write(buffer, 0, read) }
                         appended += read
                         onBytesWritten(initialSize + appended)
                     }
                     randomAccess.fd.sync()
-                } catch (exception: ArtifactSizeException) {
-                    throw exception
-                } catch (exception: IOException) {
-                    throw exception
                 }
+            } finally {
+                store.releaseWriteReservation(file)
             }
         }
 
@@ -327,7 +448,7 @@ class FileArtifactStore(private val root: File) {
         fun commit(): StoredArtifact = store.commitResumable(this)
 
         fun discard() {
-            if (!isCommitted) file.delete()
+            if (!isCommitted) store.discard(file)
         }
 
         internal fun markCommitted() {

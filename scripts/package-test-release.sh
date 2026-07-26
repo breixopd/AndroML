@@ -104,7 +104,7 @@ jq -n \
     --arg apk_sha256 "$apk_sha256" \
     --arg arm64_apk_sha256 "$arm64_apk_sha256" \
     --arg aab_sha256 "$aab_sha256" \
-    '{type:"https://in-toto.io/Statement/v1",subject:[{name:$apk,digest:{sha256:$apk_sha256}},{name:$arm64_apk,digest:{sha256:$arm64_apk_sha256}},{name:$aab,digest:{sha256:$aab_sha256}}],predicateType:"https://slsa.dev/provenance/v1",predicate:{buildDefinition:{buildType:"https://github.com/AndroML/phone-test-release",externalParameters:{tag:$tag},resolvedDependencies:[{uri:"git+https://github.com/AndroML",digest:{sha1:$commit}}]},runDetails:{builder:{id:"https://github.com/actions/runner"},metadata:{invocationId:($commit+"-"+$build_epoch)}}},source_sha256:$source_sha256}' \
+    '{type:"https://in-toto.io/Statement/v1",subject:[{name:$apk,digest:{sha256:$apk_sha256}},{name:$arm64_apk,digest:{sha256:$arm64_apk_sha256}},{name:$aab,digest:{sha256:$aab_sha256}}],predicateType:"https://slsa.dev/provenance/v1",predicate:{buildDefinition:{buildType:"https://github.com/breixopd/AndroML/phone-test-release",externalParameters:{tag:$tag},resolvedDependencies:[{uri:"git+https://github.com/breixopd/AndroML",digest:{sha1:$commit}}]},runDetails:{builder:{id:"https://github.com/actions/runner"},metadata:{invocationId:($commit+"-"+$build_epoch)}}},source_sha256:$source_sha256}' \
     > "$artifact_dir/androml-oss-v${version_name}-provenance.intoto.json"
 
 jq -n \

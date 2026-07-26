@@ -39,7 +39,7 @@ data class AgentDefinition(
         require(allowedTools.size <= 64) { "agent allowlist is too large" }
         require(maxTurns in 1..64) { "agent turn budget is out of bounds" }
         require(maxToolCalls in 0..128) { "agent tool budget is out of bounds" }
-        require(maxOutputCharacters in 1..4 * 1024 * 1024) {
+        require(maxOutputCharacters in 1..AgentMessage.MAX_MESSAGE_CHARS) {
             "agent output budget is out of bounds"
         }
     }

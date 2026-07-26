@@ -71,9 +71,12 @@ object ClusterCapabilitiesCodec {
             "cluster capabilities exceed the safety limit"
         }
         val root = try {
+            validateClusterJson(raw)
             Json.parseToJsonElement(raw).jsonObject
         } catch (error: Exception) {
             throw IllegalArgumentException("cluster capabilities are invalid", error)
+        } catch (error: StackOverflowError) {
+            throw IllegalArgumentException("cluster capabilities are too deeply nested", error)
         }
         val protocolMajor = root.requiredInt("protocol_major")
         require(protocolMajor == 1) { "unsupported cluster capabilities protocol" }

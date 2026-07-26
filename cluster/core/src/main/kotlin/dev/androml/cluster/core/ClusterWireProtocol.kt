@@ -11,6 +11,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import java.util.concurrent.FutureTask
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class ClusterExecutionRequest(
     val sourcePeerId: PeerId,
@@ -94,15 +99,50 @@ class IdempotentClusterExecutor(
     private val ledger: ClusterJobLedger,
     private val handler: ClusterExecutionHandler,
     private val nowEpochMillis: () -> Long,
+    maxConcurrentExecutions: Int = 1,
+    private val maxConcurrentPerPeer: Int = maxConcurrentExecutions,
 ) {
+    private val globalSlots = Semaphore(maxConcurrentExecutions.also { require(it in 1..64) })
+    private val peerSlots = java.util.concurrent.ConcurrentHashMap<PeerId, Semaphore>()
+    private val activeAttempts = java.util.concurrent.ConcurrentHashMap.newKeySet<JobAttemptKey>()
+
+    init { require(maxConcurrentPerPeer in 1..64) }
+
     fun execute(request: ClusterExecutionRequest): ClusterExecutionResponse {
-        if (request.request.deadlineEpochMillis <= nowEpochMillis()) {
+        val now = nowEpochMillis()
+        if (request.request.deadlineEpochMillis <= now) {
             return rejected(request, "cluster execution deadline has expired")
         }
+        if (request.request.deadlineEpochMillis - now > MAX_FUTURE_DEADLINE_MILLIS) {
+            return rejected(request, "cluster execution deadline is too far in the future")
+        }
+        val peerSlot = peerSlots.computeIfAbsent(request.sourcePeerId) { Semaphore(maxConcurrentPerPeer) }
+        val globalAcquired = globalSlots.tryAcquire()
+        if (!globalAcquired) return rejected(request, "cluster execution capacity is exhausted")
+        val peerAcquired = peerSlot.tryAcquire()
+        if (!peerAcquired) { globalSlots.release(); return rejected(request, "cluster peer execution capacity is exhausted") }
 
-        val key = JobAttemptKey(request.request.jobId, request.request.attempt)
-        return when (ledger.begin(key, nowEpochMillis(), LEASE_MILLIS)) {
-            BeginAttempt.Started -> runStarted(key, request)
+        val key = scopedAttemptKey(request)
+        if (!activeAttempts.add(key)) {
+            peerSlot.release()
+            globalSlots.release()
+            return response(request, ClusterExecutionStatus.AlreadyRunning)
+        }
+        val released = AtomicBoolean(false)
+        val releaseSlots = {
+            if (released.compareAndSet(false, true)) {
+                activeAttempts.remove(key)
+                peerSlot.release()
+                globalSlots.release()
+            }
+        }
+        var workerOwnsSlots = false
+        try {
+        return when (ledger.begin(key, now, ATTEMPT_LEASE_MILLIS)) {
+            BeginAttempt.Started -> {
+                workerOwnsSlots = true
+                runStarted(key, request, releaseSlots)
+            }
             BeginAttempt.AlreadyRunning -> response(request, ClusterExecutionStatus.AlreadyRunning)
             BeginAttempt.Completed -> response(
                 request,
@@ -115,31 +155,75 @@ class IdempotentClusterExecutor(
 
             BeginAttempt.Failed -> response(request, ClusterExecutionStatus.AlreadyFailed)
         }
+        } finally {
+            if (!workerOwnsSlots) releaseSlots()
+        }
     }
 
     private fun runStarted(
         key: JobAttemptKey,
         request: ClusterExecutionRequest,
-    ): ClusterExecutionResponse = try {
-        val output = handler.execute(request)
-        require(output.size <= ClusterWireCodec.MAX_OUTPUT_BYTES) {
-            "cluster execution output exceeds the safety limit"
+        releaseSlots: () -> Unit,
+    ): ClusterExecutionResponse {
+        val task = FutureTask {
+            try {
+                val output = handler.execute(request)
+                require(output.size <= ClusterWireCodec.MAX_OUTPUT_BYTES) {
+                    "cluster execution output exceeds the safety limit"
+                }
+                val outputHash = ContentHash.parse(sha256(output))
+                ledger.complete(key, outputHash, output)
+                response(
+                    request,
+                    status = ClusterExecutionStatus.Completed,
+                    output = output,
+                    outputHash = outputHash,
+                )
+            } catch (_: Exception) {
+                ledger.fail(key)
+                response(
+                    request,
+                    status = ClusterExecutionStatus.Failed,
+                    safeMessage = "cluster execution failed",
+                )
+            } finally {
+                releaseSlots()
+            }
         }
-        val outputHash = ContentHash.parse(sha256(output))
-        ledger.complete(key, outputHash, output)
-        response(
-            request,
-            status = ClusterExecutionStatus.Completed,
-            output = output,
-            outputHash = outputHash,
-        )
-    } catch (_: Exception) {
-        ledger.fail(key)
-        response(
-            request,
-            status = ClusterExecutionStatus.Failed,
-            safeMessage = "cluster execution failed",
-        )
+        try {
+            Thread(task, "androml-cluster-execution").apply {
+                isDaemon = true
+                start()
+            }
+        } catch (_: Exception) {
+            ledger.fail(key)
+            releaseSlots()
+            return response(
+                request,
+                status = ClusterExecutionStatus.Failed,
+                safeMessage = "cluster execution could not start",
+            )
+        }
+        return try {
+            task.get(
+                (request.request.deadlineEpochMillis - nowEpochMillis()).coerceAtLeast(1L),
+                TimeUnit.MILLISECONDS,
+            )
+        } catch (_: TimeoutException) {
+            // Do not cancel or release admission: native work may ignore interruption.
+            // The worker owns its slots until it actually exits.
+            response(
+                request,
+                status = ClusterExecutionStatus.Failed,
+                safeMessage = "cluster execution deadline expired",
+            )
+        } catch (_: Exception) {
+            response(
+                request,
+                status = ClusterExecutionStatus.Failed,
+                safeMessage = "cluster execution failed",
+            )
+        }
     }
 
     private fun rejected(request: ClusterExecutionRequest, message: String) = response(
@@ -163,8 +247,33 @@ class IdempotentClusterExecutor(
         safeMessage = safeMessage,
     )
 
+    private fun scopedAttemptKey(request: ClusterExecutionRequest): JobAttemptKey {
+        val identity = buildString {
+            append(request.sourcePeerId.value)
+            append('\u0000')
+            append(request.request.jobId.value)
+            append('\u0000')
+            append(request.request.workload.name)
+            append('\u0000')
+            append(request.request.modelKey.orEmpty())
+            append('\u0000')
+            append(request.request.modelHash?.value.orEmpty())
+            append('\u0000')
+            append(request.request.requiredRamBytes)
+            append('\u0000')
+            append(request.request.payloadHash.value)
+            append('\u0000')
+            append(request.request.idempotencyKey)
+        }
+        return JobAttemptKey(
+            ClusterJobId.parse("scoped-${sha256(identity.toByteArray(Charsets.UTF_8))}"),
+            request.request.attempt,
+        )
+    }
+
     private companion object {
-        const val LEASE_MILLIS = 2 * 60 * 1_000L
+        const val MAX_FUTURE_DEADLINE_MILLIS = 10 * 60 * 1_000L
+        const val ATTEMPT_LEASE_MILLIS = 11 * 60 * 1_000L
     }
 }
 
@@ -257,9 +366,12 @@ object ClusterWireCodec {
     }
 
     private fun parseRoot(raw: String): JsonObject = try {
+        validateClusterJson(raw)
         Json.parseToJsonElement(raw).jsonObject
     } catch (error: Exception) {
         throw IllegalArgumentException("cluster message is not valid JSON", error)
+    } catch (error: StackOverflowError) {
+        throw IllegalArgumentException("cluster message is too deeply nested", error)
     }
 
     private fun requireProtocol(root: JsonObject) {
@@ -313,6 +425,39 @@ object ClusterWireCodec {
     private fun JsonObject.requiredLong(name: String): Long =
         this[name]?.jsonPrimitive?.longOrNull
             ?: throw IllegalArgumentException("cluster message is missing $name")
+}
+
+internal fun validateClusterJson(raw: String) {
+    var depth = 0
+    var structural = 0
+    var inString = false
+    var escaped = false
+    raw.forEach { character ->
+        if (inString) {
+            if (escaped) escaped = false
+            else if (character == '\\') escaped = true
+            else if (character == '"') inString = false
+        } else {
+            when (character) {
+                '"' -> inString = true
+                '{', '[' -> {
+                    depth += 1
+                    structural += 1
+                    require(depth <= 64 && structural <= 100_000) {
+                        "cluster JSON structure exceeds safety limits"
+                    }
+                }
+                '}', ']' -> {
+                    depth -= 1
+                    structural += 1
+                    require(depth >= 0 && structural <= 100_000) {
+                        "cluster JSON structure is invalid"
+                    }
+                }
+            }
+        }
+    }
+    require(!inString && depth == 0) { "cluster JSON structure is invalid" }
 }
 
 private fun sha256(value: ByteArray): String =

@@ -29,7 +29,10 @@ class AndroidDeviceProfileCollector(private val context: Context) {
             cpuCoreCount = Runtime.getRuntime().availableProcessors(),
             totalMemoryBytes = memoryInfo.totalMem.takeIf { it > 0 },
             availableMemoryBytes = memoryInfo.availMem.takeIf { it > 0 },
-            availableStorageBytes = statFs.availableBlocksLong * statFs.blockSizeLong,
+            availableStorageBytes = saturatingMultiply(
+                statFs.availableBlocksLong,
+                statFs.blockSizeLong,
+            ).takeIf { it > 0 },
             isCharging = batteryManager?.isCharging == true,
             thermalStatus = powerManager.toThermalStatus(),
             hasVulkan = packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL),
@@ -55,5 +58,10 @@ class AndroidDeviceProfileCollector(private val context: Context) {
 
             else -> ThermalStatus.Unknown
         }
+    }
+
+    private fun saturatingMultiply(left: Long, right: Long): Long {
+        if (left <= 0L || right <= 0L) return 0L
+        return if (left > Long.MAX_VALUE / right) Long.MAX_VALUE else left * right
     }
 }

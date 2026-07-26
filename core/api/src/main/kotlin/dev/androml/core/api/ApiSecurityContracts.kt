@@ -122,26 +122,31 @@ data class ApiAuthResult(
 )
 
 class ApiKeyAuthenticator {
+    companion object {
+        /** Maximum records examined for one bearer token, regardless of collection size. */
+        const val MAX_VERIFICATION_RECORDS = 32
+    }
+
+    private val argon2Verifier: (String, String) -> Boolean
+
+    constructor(argon2Verifier: (String, String) -> Boolean = { token, hash ->
+        Argon2idCodec.verify(token, hash)
+    }) {
+        this.argon2Verifier = argon2Verifier
+    }
+
     fun authenticate(
         plaintextToken: String,
         records: Collection<ApiKeyRecord>,
         requiredScope: ApiScope,
         nowEpochMillis: Long = Instant.now().toEpochMilli(),
     ): ApiAuthResult? {
-        return records.firstOrNull { record ->
-            record.isUsableAt(nowEpochMillis) &&
-                requiredScope in record.scopes &&
-                if (record.tokenHash.startsWith(Argon2idCodec.PREFIX)) {
-                    runCatching { Argon2idCodec.verify(plaintextToken, record.tokenHash) }.getOrDefault(false)
-                } else {
-                    val supplied = MessageDigest.getInstance("SHA-256")
-                        .digest(plaintextToken.toByteArray(Charsets.UTF_8))
-                        .joinToString("") { byte -> "%02x".format(Locale.ROOT, byte) }
-                    MessageDigest.isEqual(
-                        supplied.toByteArray(Charsets.US_ASCII),
-                        record.tokenHash.toByteArray(Charsets.US_ASCII),
-                    )
-                }
+        return records.asSequence()
+            .filter { record -> record.isUsableAt(nowEpochMillis) && requiredScope in record.scopes }
+            .take(MAX_VERIFICATION_RECORDS)
+            .firstOrNull { record ->
+                record.tokenHash.startsWith(Argon2idCodec.PREFIX) &&
+                    runCatching { argon2Verifier(plaintextToken, record.tokenHash) }.getOrDefault(false)
         }?.let { ApiAuthResult(it, requiredScope) }
     }
 }
@@ -294,6 +299,10 @@ class OneTimePairing(
 
     @Synchronized
     fun issue(nowEpochMillis: Long = Instant.now().toEpochMilli()): PairingOffer {
+        pending.entries.removeAll { (_, record) ->
+            record.used || nowEpochMillis >= record.expiresAtEpochMillis
+        }
+        check(pending.size < MAX_PENDING_PAIRINGS) { "too many pending pairing codes" }
         val pairingId = "pair-${randomBytes(8).toHex()}"
         val token = "${pairingId}_${base64Url(randomBytes(24))}"
         val expires = nowEpochMillis + lifetimeMillis
@@ -308,6 +317,7 @@ class OneTimePairing(
         nowEpochMillis: Long = Instant.now().toEpochMilli(),
     ): PairingResult {
         val record = pending[pairingId] ?: return PairingResult(pairingId, false, "pairing code is unknown")
+        pending.remove(pairingId)
         if (record.used) return PairingResult(pairingId, false, "pairing code was already used")
         if (nowEpochMillis >= record.expiresAtEpochMillis) {
             record.used = true
@@ -329,6 +339,10 @@ class OneTimePairing(
 
     private fun base64Url(bytes: ByteArray): String =
         Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+
+    private companion object {
+        const val MAX_PENDING_PAIRINGS = 32
+    }
 }
 
 private val SHA256_PATTERN = Regex("[a-f0-9]{64}")

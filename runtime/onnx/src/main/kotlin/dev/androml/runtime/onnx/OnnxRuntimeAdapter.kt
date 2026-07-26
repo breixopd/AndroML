@@ -23,6 +23,7 @@ import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
 import dev.androml.runtime.api.TensorDataType
 import dev.androml.runtime.api.TensorInput
+import dev.androml.runtime.api.estimatedPeakMemoryBytes
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -55,7 +56,7 @@ class OnnxRuntimeAdapter(
         return RuntimeCompatibilityReport(
             compatible = reasons.isEmpty(),
             reasons = reasons,
-            estimatedPeakMemoryBytes = model.estimatedWorkingSetBytes + descriptor.memoryOverheadBytes,
+            estimatedPeakMemoryBytes = descriptor.estimatedPeakMemoryBytes(model),
         )
     }
 
@@ -133,6 +134,10 @@ private class OnnxRuntimeSession(
         val startedAt = System.nanoTime()
         try {
             val tokenIds = tokenize(request.prompt)
+            require(session.inputInfo.size in 1..MAX_MODEL_INPUTS) {
+                "ONNX model declares too many inputs"
+            }
+            validateOutputs()
             if (request.tensorInput != null) require(session.inputInfo.size == 1) {
                 "tensor input requires a single ONNX model input"
             }
@@ -142,7 +147,7 @@ private class OnnxRuntimeSession(
             try {
                 session.run(inputs).use { result ->
                     val value = result.get(0).getValue()
-                    val output = flatten(value).take(MAX_OUTPUT_VALUES)
+                    val output = flatten(value)
                     if (output.isNotEmpty()) {
                         emit(InferenceEvent.Token(request.id, output.joinToString(prefix = "[", postfix = "]")))
                     }
@@ -154,6 +159,10 @@ private class OnnxRuntimeSession(
             emit(InferenceEvent.Completed(request.id, generatedTokens = 1, durationMs = durationMs))
         } catch (_: InterruptedException) {
             emit(InferenceEvent.Cancelled(request.id))
+        } catch (_: OutOfMemoryError) {
+            emit(InferenceEvent.Failed(request.id, InferenceErrorCode.OutOfMemory, "ONNX output exceeded the safety limit"))
+        } catch (_: StackOverflowError) {
+            emit(InferenceEvent.Failed(request.id, InferenceErrorCode.RuntimeCrashed, "ONNX output nesting exceeded the safety limit"))
         } catch (_: Exception) {
             emit(InferenceEvent.Failed(request.id, InferenceErrorCode.RuntimeCrashed, "ONNX Runtime execution failed"))
         }
@@ -249,18 +258,62 @@ private class OnnxRuntimeSession(
         }
     }
 
-    private fun flatten(value: Any?): List<String> = when (value) {
-        is FloatArray -> value.map { "%.7g".format(java.util.Locale.ROOT, it) }
-        is DoubleArray -> value.map { "%.7g".format(java.util.Locale.ROOT, it) }
-        is LongArray -> value.map(Long::toString)
-        is IntArray -> value.map(Int::toString)
-        is Array<*> -> value.flatMap(::flatten)
-        is List<*> -> value.flatMap(::flatten)
-        else -> listOf(value?.toString().orEmpty())
+    private fun validateOutputs() {
+        require(session.outputInfo.size in 1..MAX_MODEL_OUTPUTS) {
+            "ONNX model declares too many outputs"
+        }
+        session.outputInfo.values.forEach { node ->
+            val info = node.info as? TensorInfo ?: error("ONNX output is not a tensor")
+            var elements = 1L
+            info.shape.forEachIndexed { index, dimension ->
+                // A dynamic batch is common and this adapter always submits one item.
+                // Other dynamic axes could materialize an unbounded tensor before Java
+                // can inspect it, so they are rejected at session-open time.
+                val boundedDimension = if (dimension <= 0L && index == 0) 1L else dimension
+                require(boundedDimension > 0L) {
+                    "ONNX output has an unbounded non-batch dimension"
+                }
+                elements = elements.safeMultiply(boundedDimension)
+            }
+            require(elements <= MAX_OUTPUT_VALUES) {
+                "ONNX output shape exceeds the safety limit"
+            }
+        }
+    }
+
+    private fun flatten(value: Any?): List<String> {
+        val output = ArrayList<String>(MAX_OUTPUT_VALUES)
+        val pending = java.util.ArrayDeque<Any>()
+        if (value != null) pending.add(value)
+        while (pending.isNotEmpty() && output.size < MAX_OUTPUT_VALUES) {
+            when (val item = pending.removeLast()) {
+                is FloatArray -> item.take(MAX_OUTPUT_VALUES - output.size).forEach {
+                    output += "%.7g".format(java.util.Locale.ROOT, it)
+                }
+                is DoubleArray -> item.take(MAX_OUTPUT_VALUES - output.size).forEach {
+                    output += "%.7g".format(java.util.Locale.ROOT, it)
+                }
+                is LongArray -> item.take(MAX_OUTPUT_VALUES - output.size).forEach { output += it.toString() }
+                is IntArray -> item.take(MAX_OUTPUT_VALUES - output.size).forEach { output += it.toString() }
+                is Array<*> -> item.indices.reversed().forEach { index ->
+                    item[index]?.let(pending::addLast)
+                }
+                is List<*> -> item.asReversed().forEach { if (it != null) pending.addLast(it) }
+                else -> output += item.toString()
+            }
+        }
+        return output
+    }
+
+    private fun Long.safeMultiply(other: Long): Long {
+        if (this > MAX_OUTPUT_VALUES / other) return MAX_OUTPUT_VALUES.toLong() + 1L
+        return this * other
     }
 
     private companion object {
         const val MAX_INPUT_TOKENS = 512
         const val MAX_OUTPUT_VALUES = 1024
+        const val MAX_MODEL_INPUTS = 8
+        const val MAX_MODEL_OUTPUTS = 8
     }
 }

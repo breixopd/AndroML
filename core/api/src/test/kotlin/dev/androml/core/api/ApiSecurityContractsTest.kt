@@ -78,6 +78,17 @@ class ApiSecurityContractsTest {
     }
 
     @Test
+    fun authenticationNeverVerifiesMoreThanBoundedRecords() {
+        val generated = ApiKeyCodec.generate("bounded", setOf(ApiScope.Inference), nowEpochMillis = 1L)
+        var calls = 0
+        val authenticator = ApiKeyAuthenticator { _, _ -> calls++; false }
+        val records = List(ApiKeyAuthenticator.MAX_VERIFICATION_RECORDS + 20) { generated.record }
+
+        assertEquals(null, authenticator.authenticate("amk_invalid", records, ApiScope.Inference, 2L))
+        assertEquals(ApiKeyAuthenticator.MAX_VERIFICATION_RECORDS, calls)
+    }
+
+    @Test
     fun loopbackAndLanPolicyHaveDifferentCertificateRequirements() {
         val loopback = ApiSecurityPolicy().evaluate(
             bindMode = BindMode.Loopback,

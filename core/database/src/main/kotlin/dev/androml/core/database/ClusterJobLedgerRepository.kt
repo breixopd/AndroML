@@ -20,6 +20,20 @@ interface ClusterJobAttemptDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun replace(entity: ClusterJobAttemptEntity)
+
+    @Query("SELECT COUNT(*) FROM cluster_job_attempts")
+    fun countAll(): Int
+
+    @Query(
+        "DELETE FROM cluster_job_attempts WHERE rowid IN " +
+            "(SELECT rowid FROM cluster_job_attempts WHERE state != 'Running' " +
+            "AND updatedAtEpochMillis <= :cutoffEpochMillis " +
+            "ORDER BY updatedAtEpochMillis ASC LIMIT :limit)",
+    )
+    fun deleteTerminalOlderThan(cutoffEpochMillis: Long, limit: Int): Int
+
+    @Query("DELETE FROM cluster_job_attempts WHERE state = 'Running' AND leaseExpiresAtEpochMillis <= :nowEpochMillis")
+    fun deleteExpiredRunning(nowEpochMillis: Long): Int
 }
 
 /**
@@ -28,10 +42,12 @@ interface ClusterJobAttemptDao {
  */
 class ClusterJobLedgerRepository(
     private val dao: ClusterJobAttemptDao,
+    private val nowEpochMillis: () -> Long = { System.currentTimeMillis() },
 ) : ClusterJobLedger {
     @Synchronized
     override fun begin(key: JobAttemptKey): BeginAttempt = when (val existing = dao.find(key.jobId.value, key.attempt)) {
         null -> {
+            makeRoomForAttempt(nowEpochMillis())
             dao.insert(
                 ClusterJobAttemptEntity(
                     jobId = key.jobId.value,
@@ -58,6 +74,7 @@ class ClusterJobLedgerRepository(
         require(leaseMillis in 1_000L..24 * 60 * 60 * 1_000L) { "cluster lease is out of bounds" }
         val existing = dao.find(key.jobId.value, key.attempt)
         if (existing == null) {
+            makeRoomForAttempt(nowEpochMillis)
             dao.insert(
                 ClusterJobAttemptEntity(
                     jobId = key.jobId.value,
@@ -93,7 +110,7 @@ class ClusterJobLedgerRepository(
             outputHash = outputHash.value,
             output = output?.copyOf(),
             leaseExpiresAtEpochMillis = existing.leaseExpiresAtEpochMillis,
-            updatedAtEpochMillis = System.currentTimeMillis(),
+            updatedAtEpochMillis = nowEpochMillis(),
         ))
     }
 
@@ -101,7 +118,7 @@ class ClusterJobLedgerRepository(
     override fun fail(key: JobAttemptKey) {
         val existing = requireNotNull(dao.find(key.jobId.value, key.attempt)) { "job attempt was not started" }
         check(existing.state == JobState.Running.name) { "job attempt is not running" }
-        dao.replace(existing.copy(state = JobState.Failed.name, updatedAtEpochMillis = System.currentTimeMillis()))
+        dao.replace(existing.copy(state = JobState.Failed.name, updatedAtEpochMillis = nowEpochMillis()))
     }
 
     override fun state(key: JobAttemptKey): JobState? = dao.find(key.jobId.value, key.attempt)?.state?.let(::parseState)
@@ -110,6 +127,19 @@ class ClusterJobLedgerRepository(
 
     override fun output(key: JobAttemptKey): ByteArray? = dao.find(key.jobId.value, key.attempt)?.output?.copyOf()
 
+    private fun makeRoomForAttempt(nowEpochMillis: Long) {
+        if (dao.countAll() < MAX_LEDGER_RECORDS) return
+        dao.deleteExpiredRunning(nowEpochMillis)
+        dao.deleteTerminalOlderThan(nowEpochMillis - REPLAY_RETENTION_MILLIS, PRUNE_BATCH)
+        check(dao.countAll() < MAX_LEDGER_RECORDS) { "cluster job ledger capacity is exhausted" }
+    }
+
     private fun parseState(raw: String): JobState = JobState.entries.firstOrNull { it.name == raw }
         ?: error("unknown persisted cluster job state")
+
+    private companion object {
+        const val MAX_LEDGER_RECORDS = 256
+        const val PRUNE_BATCH = 32
+        const val REPLAY_RETENTION_MILLIS = 24 * 60 * 60 * 1_000L
+    }
 }

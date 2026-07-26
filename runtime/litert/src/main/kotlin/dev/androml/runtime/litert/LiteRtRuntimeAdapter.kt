@@ -17,6 +17,7 @@ import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
 import dev.androml.runtime.api.TensorDataType
 import dev.androml.runtime.api.TensorInput
+import dev.androml.runtime.api.estimatedPeakMemoryBytes
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -44,7 +45,7 @@ class LiteRtRuntimeAdapter(
         return RuntimeCompatibilityReport(
             compatible = reasons.isEmpty(),
             reasons = reasons,
-            estimatedPeakMemoryBytes = model.estimatedWorkingSetBytes + descriptor.memoryOverheadBytes,
+            estimatedPeakMemoryBytes = descriptor.estimatedPeakMemoryBytes(model),
         )
     }
 
@@ -164,7 +165,8 @@ private class LiteRtRuntimeSession(
 
     private fun createInput(prompt: String): ByteBuffer {
         val tensor = interpreter.getInputTensor(0)
-        val elementCount = tensor.numElements().coerceIn(1, MAX_ELEMENTS)
+        val elementCount = tensor.numElements()
+        require(elementCount in 1..MAX_ELEMENTS) { "LiteRT input tensor exceeds the safety limit" }
         val values = prompt.codePoints().limit(elementCount.toLong()).toArray()
         val buffer = ByteBuffer.allocateDirect(elementCount * tensor.dataType().byteSize()).order(ByteOrder.nativeOrder())
         repeat(elementCount) { index ->
@@ -182,8 +184,11 @@ private class LiteRtRuntimeSession(
     }
 
     private fun createOutput(): ByteBuffer {
+        require(interpreter.getOutputTensorCount() == 1) { "LiteRT models must declare exactly one output" }
         val tensor = interpreter.getOutputTensor(0)
-        val bytes = tensor.numElements().coerceIn(1, MAX_ELEMENTS) * tensor.dataType().byteSize()
+        val elementCount = tensor.numElements()
+        require(elementCount in 1..MAX_ELEMENTS) { "LiteRT output tensor exceeds the safety limit" }
+        val bytes = Math.multiplyExact(elementCount, tensor.dataType().byteSize())
         return ByteBuffer.allocateDirect(bytes).order(ByteOrder.nativeOrder())
     }
 

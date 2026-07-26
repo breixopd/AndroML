@@ -187,7 +187,7 @@ fun ClusterScreen(
                 generatedPairingPayload = withContext(Dispatchers.IO) {
                     controller.createPairingInvite(hostValue, parsedPort)
                 }
-                message = "Invite created; it expires in five minutes and can be used once"
+                message = "Invite created; it expires in five minutes. Pairing remains protected by certificate pinning."
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {

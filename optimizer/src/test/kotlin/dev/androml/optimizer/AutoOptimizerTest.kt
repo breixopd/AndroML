@@ -15,6 +15,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AutoOptimizerTest {
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsNonFiniteBenchmarkMeasurements() {
+        BenchmarkObservation(RuntimeId.parse("cpu"), tokensPerSecond = Double.NaN)
+    }
+
+    @Test
+    fun zeroBenchmarkDoesNotOverrideBackendPreference() {
+        val result = optimizer().select(
+            device = device(),
+            model = ModelRequirements(ModelWorkload.TextGeneration, weightBytes = 1.gibibytes),
+            runtimes = listOf(
+                runtime("cpu", AccelerationBackend.Cpu),
+                runtime("gpu", AccelerationBackend.Gpu),
+            ),
+            benchmarks = listOf(BenchmarkObservation(RuntimeId.parse("gpu"), tokensPerSecond = 0.0)),
+        )
+
+        assertEquals("gpu", result.selected?.descriptor?.id?.value)
+    }
+
     @Test
     fun measuredPerformanceCanOutrankDefaultBackendPreference() {
         val result = optimizer().select(

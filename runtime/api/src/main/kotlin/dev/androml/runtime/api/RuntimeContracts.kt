@@ -55,6 +55,15 @@ data class RuntimeDescriptor(
     }
 }
 
+fun RuntimeDescriptor.estimatedPeakMemoryBytes(model: ModelRequirements): Long {
+    val workingSet = model.estimatedWorkingSetBytes
+    return if (workingSet > Long.MAX_VALUE - memoryOverheadBytes) {
+        Long.MAX_VALUE
+    } else {
+        workingSet + memoryOverheadBytes
+    }
+}
+
 data class RuntimeCompatibilityReport(
     val compatible: Boolean,
     val reasons: List<RuntimeIncompatibilityReason>,

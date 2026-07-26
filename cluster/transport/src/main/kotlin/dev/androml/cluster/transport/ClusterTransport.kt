@@ -70,7 +70,7 @@ class ClusterTransportException(
 class ClusterExecutionServer(
     private val config: ClusterTransportConfig,
     private val tlsMaterial: TlsServerMaterial,
-    private val pairedPeers: () -> Map<CertificateFingerprint, PeerId>,
+    private val pairedPeers: suspend () -> Map<CertificateFingerprint, PeerId>,
     private val executor: IdempotentClusterExecutor,
     private val localAdvertisement: (() -> ClusterCapabilityAdvertisement?)? = null,
 ) {
