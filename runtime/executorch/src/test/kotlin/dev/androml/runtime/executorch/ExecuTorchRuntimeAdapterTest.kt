@@ -12,6 +12,8 @@ class ExecuTorchRuntimeAdapterTest {
     fun descriptorExposesPteTextEmbeddingWorkload() {
         assertEquals("executorch", ExecuTorchRuntimeDescriptor.value.id.value)
         assertTrue(ModelWorkload.TextEmbedding in ExecuTorchRuntimeDescriptor.value.workloads)
+        assertTrue(ModelWorkload.ImageClassification in ExecuTorchRuntimeDescriptor.value.workloads)
+        assertTrue(ModelWorkload.AudioClassification in ExecuTorchRuntimeDescriptor.value.workloads)
     }
 
     @Test

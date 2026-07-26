@@ -17,8 +17,11 @@ data class BenchmarkObservation(
     val firstTokenLatencyMs: Double? = null,
 ) {
     init {
-        require(tokensPerSecond >= 0.0) { "tokensPerSecond must be non-negative" }
-        require(firstTokenLatencyMs == null || firstTokenLatencyMs >= 0.0) {
+        require(tokensPerSecond.isFinite() && tokensPerSecond >= 0.0) {
+            "tokensPerSecond must be a finite, non-negative value"
+        }
+        require(firstTokenLatencyMs == null ||
+            (firstTokenLatencyMs.isFinite() && firstTokenLatencyMs >= 0.0)) {
             "firstTokenLatencyMs must be non-negative when present"
         }
     }
@@ -88,7 +91,16 @@ class AutoOptimizer {
             .sortedWith(
                 compareBy<RuntimeCandidate> { if (it.compatibility.compatible) 0 else 1 }
                     .thenByDescending { it.score ?: Double.NEGATIVE_INFINITY }
-                    .thenBy { it.descriptor.id.value },
+                    .thenBy { it.descriptor.id.value }
+                    .thenBy { it.descriptor.version }
+                    .thenBy { it.descriptor.acceleration.name }
+                    .thenBy { it.descriptor.memoryOverheadBytes }
+                    .thenBy { it.descriptor.minAndroidApi }
+                    .thenBy { it.descriptor.supportedAbis.sorted().joinToString(",") }
+                    .thenBy { it.descriptor.workloads.sortedBy { workload -> workload.name }.joinToString(",") }
+                    .thenBy { it.descriptor.requiresVulkan }
+                    .thenBy { it.descriptor.maxContextTokens ?: Int.MAX_VALUE }
+                    .thenBy { it.descriptor.isAvailable },
             )
 
         val selected = candidates.firstOrNull { it.compatibility.compatible }
@@ -154,7 +166,9 @@ class AutoOptimizer {
         } else {
             0.0
         }
-        val measuredPerformance = benchmark?.let { 10_000.0 + it.tokensPerSecond * 100.0 } ?: 0.0
+        // A benchmark is an additive signal. A synthetic baseline would let a zero/old
+        // observation overwhelm backend preference and make selection unnecessarily stale.
+        val measuredPerformance = benchmark?.tokensPerSecond?.times(100.0) ?: 0.0
         val memoryHeadroom = device.availableMemoryBytes?.let { available ->
             val peak = compatibility.estimatedPeakMemoryBytes ?: return@let 0.0
             if (peak == 0L) 2.0 else (available.toDouble() / peak.toDouble()).coerceIn(0.0, 2.0)

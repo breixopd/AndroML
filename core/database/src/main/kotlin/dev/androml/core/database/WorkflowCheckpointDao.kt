@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import dev.androml.core.workflow.NodeId
 import dev.androml.core.workflow.RunId
 import dev.androml.core.workflow.WorkflowCheckpoint
@@ -25,12 +26,37 @@ abstract class WorkflowCheckpointDao : WorkflowCheckpointStore {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     protected abstract suspend fun insertEntity(entity: WorkflowCheckpointEntity)
 
+    @Query("SELECT COUNT(*) FROM workflow_checkpoints")
+    protected abstract suspend fun countAllEntities(): Long
+
+    @Query("SELECT COALESCE(SUM(LENGTH(valuePayload)), 0) FROM workflow_checkpoints")
+    protected abstract suspend fun totalValueCharacters(): Long
+
+    @Transaction
     override suspend fun save(checkpoint: WorkflowCheckpoint) {
-        insertEntity(WorkflowCheckpointStorageMapper.toEntity(checkpoint))
+        val entity = WorkflowCheckpointStorageMapper.toEntity(checkpoint)
+        val existing = findEntity(entity.runId, entity.nodeId, entity.attempt)
+        if (existing == null) {
+            require(countAllEntities() < MAX_STORED_CHECKPOINTS) {
+                "workflow checkpoint storage limit is exhausted"
+            }
+        }
+        val projectedCharacters = totalValueCharacters() -
+            (existing?.valuePayload?.length?.toLong() ?: 0L) +
+            entity.valuePayload.length.toLong()
+        require(projectedCharacters <= MAX_STORED_VALUE_CHARACTERS) {
+            "workflow checkpoint payload storage limit is exhausted"
+        }
+        insertEntity(entity)
     }
 
     override suspend fun load(runId: RunId, nodeId: NodeId, attempt: Int): WorkflowCheckpoint? =
         findEntity(runId.value, nodeId.value, attempt)?.let(WorkflowCheckpointStorageMapper::toDomain)
+
+    private companion object {
+        const val MAX_STORED_CHECKPOINTS = 512L
+        const val MAX_STORED_VALUE_CHARACTERS = 64L * 1024 * 1024
+    }
 }
 
 object WorkflowCheckpointStorageMapper {

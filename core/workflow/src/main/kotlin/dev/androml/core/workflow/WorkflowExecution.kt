@@ -4,6 +4,10 @@ import dev.androml.core.tools.ToolDescriptor
 import dev.androml.core.tools.ToolId
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -268,6 +272,31 @@ class WorkflowExecutor(
         definition: WorkflowDefinition,
         input: WorkflowValue,
     ): WorkflowExecutionResult {
+        val holder = runLocks.compute(runId) { _, existing ->
+            (existing ?: RunLock()).also { it.users.incrementAndGet() }
+        }!!
+        return try {
+            holder.mutex.withLock {
+                executeLocked(runId, definition, input)
+            }
+        } finally {
+            runLocks.computeIfPresent(runId) { _, current ->
+                if (current !== holder) {
+                    current
+                } else if (holder.users.decrementAndGet() == 0) {
+                    null
+                } else {
+                    holder
+                }
+            }
+        }
+    }
+
+    private suspend fun executeLocked(
+        runId: RunId,
+        definition: WorkflowDefinition,
+        input: WorkflowValue,
+    ): WorkflowExecutionResult {
         val validation = WorkflowValidator(availableTools, availableModels, availableAgents).validate(definition)
         if (!validation.isValid) {
             return WorkflowExecutionResult(
@@ -392,6 +421,21 @@ class WorkflowExecutor(
                 currentNodeId = nextNode(node, currentValue, activeAttempt, outgoing)
                     ?: return fail(runId, eventWriter, "node ${node.id.value} has no next step")
                 continue
+            }
+
+            // Never replay a node left in-flight by a crash without an explicit retry
+            // marker. This is the safe policy for potentially non-idempotent work.
+            if (node !is ApprovalNode &&
+                priorAttempts.any { it.attempt == activeAttempt } && stream.none { stored ->
+                    val failed = stored.event as? WorkflowEvent.NodeFailed
+                    failed?.nodeId == node.id && failed.attempt == activeAttempt
+                }
+            ) {
+                return failNode(
+                    runId, eventWriter, node, activeAttempt,
+                    "node outcome is unknown after interruption; resume to retry explicitly",
+                    retryable = true,
+                )
             }
 
             if (node is ApprovalNode) {
@@ -550,14 +594,14 @@ class WorkflowExecutor(
         attempt: Int,
         stream: List<StoredWorkflowEvent>,
     ): WorkflowCheckpoint? {
+        val checkpoint = checkpointStore.load(runId, nodeId, attempt)
+            ?: return null
         val event = stream.asReversed().firstOrNull {
             it.event is WorkflowEvent.Checkpoint &&
                 it.event.nodeId == nodeId &&
                 it.event.attempt == attempt
-        }?.event as? WorkflowEvent.Checkpoint ?: return null
-        val checkpoint = checkpointStore.load(runId, nodeId, attempt)
-            ?: return null
-        if (checkpoint.outputHash != event.outputHash) return null
+        }?.event as? WorkflowEvent.Checkpoint
+        if (event != null && checkpoint.outputHash != event.outputHash) return null
         return checkpoint
     }
 
@@ -713,7 +757,13 @@ class WorkflowExecutor(
 
     companion object {
         private const val MAX_SAFE_MESSAGE_CHARS = 512
+        private val runLocks = ConcurrentHashMap<RunId, RunLock>()
     }
+
+    private class RunLock(
+        val mutex: Mutex = Mutex(),
+        val users: AtomicInteger = AtomicInteger(),
+    )
 }
 
 /** Suspend-friendly in-memory event store used by executor tests and previews. */

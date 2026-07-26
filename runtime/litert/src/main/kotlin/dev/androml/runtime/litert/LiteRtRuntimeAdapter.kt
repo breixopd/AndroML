@@ -15,6 +15,9 @@ import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.api.RuntimeIncompatibilityReason
 import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
+import dev.androml.runtime.api.TensorDataType
+import dev.androml.runtime.api.TensorInput
+import dev.androml.runtime.api.estimatedPeakMemoryBytes
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -42,7 +45,7 @@ class LiteRtRuntimeAdapter(
         return RuntimeCompatibilityReport(
             compatible = reasons.isEmpty(),
             reasons = reasons,
-            estimatedPeakMemoryBytes = model.estimatedWorkingSetBytes + descriptor.memoryOverheadBytes,
+            estimatedPeakMemoryBytes = descriptor.estimatedPeakMemoryBytes(model),
         )
     }
 
@@ -50,8 +53,8 @@ class LiteRtRuntimeAdapter(
         model: ModelRequirements,
         configuration: RuntimeConfiguration,
     ): RuntimeSession {
-        check(model.workload == ModelWorkload.TextEmbedding) {
-            "LiteRT adapter currently serves text embeddings only"
+        check(model.workload in descriptor.workloads) {
+            "LiteRT adapter does not serve ${model.workload}"
         }
         check(!configuration.useAcceleration) {
             "LiteRT CPU adapter does not enable an unvalidated delegate"
@@ -76,7 +79,13 @@ object LiteRtRuntimeDescriptor {
         version = "1.4.2",
         supportedAbis = setOf("arm64-v8a", "x86_64"),
         minAndroidApi = 29,
-        workloads = setOf(ModelWorkload.TextEmbedding),
+        workloads = setOf(
+            ModelWorkload.TextEmbedding,
+            ModelWorkload.ImageClassification,
+            ModelWorkload.ObjectDetection,
+            ModelWorkload.ImageSegmentation,
+            ModelWorkload.AudioClassification,
+        ),
         acceleration = AccelerationBackend.Cpu,
         requiresVulkan = false,
         memoryOverheadBytes = 64L * 1024L * 1024L,
@@ -99,7 +108,7 @@ private class LiteRtRuntimeSession(
         }
         val startedAt = System.nanoTime()
         try {
-            val input = createInput(request.prompt)
+            val input = request.tensorInput?.let(::createTensorInput) ?: createInput(request.prompt)
             val output = createOutput()
             interpreter.run(input, output)
             if (cancelled.get()) {
@@ -133,9 +142,31 @@ private class LiteRtRuntimeSession(
         interpreter.close()
     }
 
+    private fun createTensorInput(input: TensorInput): ByteBuffer {
+        val tensor = interpreter.getInputTensor(0)
+        val expectedShape = tensor.shape()
+        require(expectedShape.size == input.shape.size) { "tensor input rank does not match the LiteRT model" }
+        expectedShape.forEachIndexed { index, dimension ->
+            require(dimension.toLong() == input.shape[index]) {
+                "tensor input shape does not match the LiteRT model"
+            }
+        }
+        val expectedType = when (tensor.dataType()) {
+            DataType.FLOAT32 -> TensorDataType.Float32
+            DataType.INT32 -> TensorDataType.Int32
+            DataType.INT64 -> TensorDataType.Int64
+            DataType.UINT8 -> TensorDataType.UInt8
+            DataType.INT8 -> TensorDataType.Int8
+            else -> error("unsupported LiteRT input type ${tensor.dataType()}")
+        }
+        require(input.dataType == expectedType) { "tensor input type does not match the LiteRT model" }
+        return input.nativeBuffer()
+    }
+
     private fun createInput(prompt: String): ByteBuffer {
         val tensor = interpreter.getInputTensor(0)
-        val elementCount = tensor.numElements().coerceIn(1, MAX_ELEMENTS)
+        val elementCount = tensor.numElements()
+        require(elementCount in 1..MAX_ELEMENTS) { "LiteRT input tensor exceeds the safety limit" }
         val values = prompt.codePoints().limit(elementCount.toLong()).toArray()
         val buffer = ByteBuffer.allocateDirect(elementCount * tensor.dataType().byteSize()).order(ByteOrder.nativeOrder())
         repeat(elementCount) { index ->
@@ -153,8 +184,11 @@ private class LiteRtRuntimeSession(
     }
 
     private fun createOutput(): ByteBuffer {
+        require(interpreter.getOutputTensorCount() == 1) { "LiteRT models must declare exactly one output" }
         val tensor = interpreter.getOutputTensor(0)
-        val bytes = tensor.numElements().coerceIn(1, MAX_ELEMENTS) * tensor.dataType().byteSize()
+        val elementCount = tensor.numElements()
+        require(elementCount in 1..MAX_ELEMENTS) { "LiteRT output tensor exceeds the safety limit" }
+        val bytes = Math.multiplyExact(elementCount, tensor.dataType().byteSize())
         return ByteBuffer.allocateDirect(bytes).order(ByteOrder.nativeOrder())
     }
 

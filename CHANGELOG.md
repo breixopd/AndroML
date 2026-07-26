@@ -4,10 +4,17 @@ All notable changes to AndroML are documented here.
 
 ## [Unreleased]
 
-- Establish the Android/Compose project foundation.
-- Add the private phone-test release gate.
-- Add OSS-only GitHub Release automation.
-- Add Release Please version and changelog automation for GitHub-only test releases.
+## [1.0.0] - 2026-07-26
+
+- Ship the complete power-user Compose interface for model discovery, library management, optimization, local and distributed inference, RAG, workflows, agents, tools, APIs, settings, and cluster control.
+- Add pinned-commit Hugging Face search and resumable, size-bounded, SHA-256 verified model downloads.
+- Bundle LiteRT, LiteRT-LM, ONNX Runtime Mobile, ExecuTorch, and a pinned arm64 llama.cpp runtime with device-aware compatibility checks and automatic runtime selection.
+- Add scoped bearer authentication, bounded Argon2 verification, request throttling, loopback/LAN policies, mTLS, OpenAI-compatible endpoints, OpenAPI, and durable privacy-safe audit history.
+- Add document RAG with bounded PDF, EPUB, DOCX, XLSX, PPTX, HTML, JSON, CSV, and text ingestion plus citation-preserving retrieval.
+- Add durable workflow checkpoints, explicit crash-retry semantics, encrypted one-shot approval continuations, allowlisted tools, and bounded local agents.
+- Add certificate-pinned peer pairing, authenticated discovery, capability routing, distributed inference/RAG/workflow stages, bounded model transfer, replay isolation, quotas, and deadline-aware admission.
+- Harden native and parser boundaries with tensor/output limits, JSON and archive depth/size guards, isolated-runtime watchdogs, session/job admission, storage quotas, stale-state cleanup, and overflow-safe memory accounting.
+- Add OSS-only GitHub phone-test releases with signed universal and arm64 APKs, AAB, checksums, SBOM, provenance, R8 mapping, exact-source manifests, and store-publication hard gates.
 
 ## [0.1.0] - 2026-07-18
 

@@ -3,6 +3,14 @@ package dev.androml.core.model
 enum class ModelWorkload {
     TextGeneration,
     TextEmbedding,
+    /** Image classification models that consume a bounded tensor input. */
+    ImageClassification,
+    /** Detection models whose output is returned as bounded numeric tensors. */
+    ObjectDetection,
+    /** Segmentation models whose output is returned as bounded numeric tensors. */
+    ImageSegmentation,
+    /** Audio classification models that consume a bounded PCM/features tensor. */
+    AudioClassification,
     ImageGeneration,
     SpeechToText,
 }

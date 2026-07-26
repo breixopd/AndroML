@@ -31,6 +31,7 @@ gradle_args=(
     :runtime:litertlm:testDebugUnitTest
     :runtime:onnx:testDebugUnitTest
     :runtime:executorch:testDebugUnitTest
+    :runtime:llamacpp:testDebugUnitTest
     :runtime:service:testDebugUnitTest
     :optimizer:testDebugUnitTest
     :app:testOssDebugUnitTest
@@ -53,6 +54,7 @@ gradle_args=(
     :runtime:litertlm:lintDebug
     :runtime:onnx:lintDebug
     :runtime:executorch:lintDebug
+    :runtime:llamacpp:lintDebug
     :runtime:service:lintDebug
     :optimizer:lintDebug
     :app:lintOssDebug

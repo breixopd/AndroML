@@ -4,6 +4,8 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -11,6 +13,33 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorkflowExecutorTest {
+    @Test
+    fun concurrentExecuteCallsForRunIdDoNotDuplicateNodeRunner() = runBlocking {
+        val input = InputNode(NodeId.parse("input"), WorkflowValueType.Text)
+        val model = ModelNode(NodeId.parse("model"), "demo", "text")
+        val output = OutputNode(NodeId.parse("output"))
+        val definition = WorkflowDefinition(
+            WorkflowId.parse("concurrent"), 1, input.id,
+            listOf(input, model, output),
+            listOf(WorkflowEdge(input.id, model.id), WorkflowEdge(model.id, output.id)),
+        )
+        val calls = AtomicInteger(0)
+        val executor = WorkflowExecutor(
+            InMemoryDurableWorkflowEventStore(), InMemoryWorkflowCheckpointStore(),
+            availableModels = setOf("demo"),
+            runners = WorkflowNodeRunners(model = { _, _ ->
+                calls.incrementAndGet()
+                WorkflowValue.Text("ok")
+            }),
+        )
+        coroutineScope {
+            val first = async { executor.execute(RunId.parse("same-run"), definition, WorkflowValue.Text("x")) }
+            val second = async { executor.execute(RunId.parse("same-run"), definition, WorkflowValue.Text("x")) }
+            first.await()
+            second.await()
+        }
+        assertEquals(1, calls.get())
+    }
     @Test
     fun valueCodecRoundTripsEveryCheckpointValueKind() {
         val values = listOf(

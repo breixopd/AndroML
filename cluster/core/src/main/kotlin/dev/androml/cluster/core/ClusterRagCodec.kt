@@ -170,10 +170,14 @@ object ClusterRagCodec {
 
     private fun parse(raw: ByteArray, maxBytes: Int): JsonObject {
         require(raw.size <= maxBytes) { "cluster RAG payload exceeds the safety limit" }
+        val text = raw.toString(Charsets.UTF_8)
         return try {
-            Json.parseToJsonElement(raw.toString(Charsets.UTF_8)).jsonObject
+            validateClusterJson(text)
+            Json.parseToJsonElement(text).jsonObject
         } catch (error: Exception) {
             throw IllegalArgumentException("cluster RAG payload is invalid", error)
+        } catch (error: StackOverflowError) {
+            throw IllegalArgumentException("cluster RAG payload is too deeply nested", error)
         }
     }
 

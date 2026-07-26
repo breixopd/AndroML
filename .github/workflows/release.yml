@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: write
+  attestations: write
+  id-token: write
 
 concurrency:
   group: github-test-release-recovery-${{ inputs.tag_name }}
@@ -42,7 +44,7 @@ jobs:
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
 
       - name: Block store publication during phone test
         run: test "$STORE_SUBMISSIONS_ENABLED" = 'false'
@@ -68,6 +70,7 @@ jobs:
 
       - name: Build OSS release APK
         env:
+          ANDROML_PREPARE_LLAMA_CPP: 'true'
           ANDROML_RELEASE_KEYSTORE: ${{ runner.temp }}/androml-test-release.jks
           ANDROML_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROML_RELEASE_STORE_PASSWORD }}
           ANDROML_RELEASE_KEY_ALIAS: ${{ secrets.ANDROML_RELEASE_KEY_ALIAS }}
@@ -82,7 +85,14 @@ jobs:
       - name: Assert release contains only GitHub test artifacts
         run: |
           test "$STORE_SUBMISSIONS_ENABLED" = 'false'
-          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -ge 8
+          test "$(find dist/test-release -maxdepth 1 -type f | wc -l)" -ge 11
+
+      - name: Attest phone-test binaries
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            dist/test-release/*.apk
+            dist/test-release/*.aab
 
       - name: Confirm existing GitHub release
         env:

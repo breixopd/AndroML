@@ -3,10 +3,40 @@ package dev.androml.runtime.api
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InferenceContractsTest {
+    @Test
+    fun acceptsBoundedFloatTensorInput() {
+        val input = TensorInput(
+            data = ByteArray(2 * 3 * TensorDataType.Float32.byteSize),
+            shape = longArrayOf(1, 2, 3),
+        )
+        val request = InferenceRequest(
+            id = InferenceRequestId.parse("tensor-1"),
+            prompt = "image",
+            maxNewTokens = 1,
+            temperature = 0.0,
+            tensorInput = input,
+        )
+
+        assertEquals(6L, request.tensorInput?.elementCount)
+        assertArrayEquals(input.data, request.tensorInput?.nativeBuffer()?.let { buffer ->
+            ByteArray(buffer.remaining()).also(buffer::get)
+        })
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsTensorShapeByteLengthMismatch() {
+        TensorInput(
+            data = ByteArray(4),
+            shape = longArrayOf(2),
+            dataType = TensorDataType.Float32,
+        )
+    }
+
     @Test
     fun fakeRuntimeEmitsBoundedOrderedEvents() {
         val session = FakeRuntimeAdapter().openSession(

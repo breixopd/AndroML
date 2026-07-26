@@ -60,6 +60,7 @@ android {
             ) {
                 signingConfig = signingConfigs.create("testRelease") {
                     storeFile = file(releaseKeystorePath)
+                    storeType = "JKS"
                     storePassword = releaseStorePassword
                     keyAlias = releaseKeyAlias
                     keyPassword = releaseKeyPassword
@@ -69,6 +70,17 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+        }
+    }
+
+    // Keep a universal APK for easy sideloading and produce ABI-specific artifacts for
+    // phones that should avoid carrying secondary-ABI native libraries.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "x86_64")
+            isUniversalApk = true
         }
     }
 
@@ -109,6 +121,7 @@ dependencies {
     implementation(project(":runtime:onnx"))
     implementation(project(":runtime:litert"))
     implementation(project(":runtime:executorch"))
+    implementation(project(":runtime:llamacpp"))
     implementation(project(":runtime:service"))
     implementation(project(":optimizer"))
     implementation(libs.androidx.core.ktx)

@@ -100,10 +100,14 @@ object ClusterWorkflowCodec {
 
     private fun parse(raw: ByteArray): JsonObject {
         require(raw.size <= MAX_WIRE_BYTES) { "workflow stage payload exceeds the safety limit" }
+        val text = raw.toString(Charsets.UTF_8)
         return try {
-            Json.parseToJsonElement(raw.toString(Charsets.UTF_8)).jsonObject
+            validateClusterJson(text)
+            Json.parseToJsonElement(text).jsonObject
         } catch (error: Exception) {
             throw IllegalArgumentException("workflow stage payload is invalid", error)
+        } catch (error: StackOverflowError) {
+            throw IllegalArgumentException("workflow stage payload is too deeply nested", error)
         }
     }
 

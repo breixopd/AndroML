@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-apk_path="${1:?usage: verify-test-release.sh <apk> [expected-version-name]}"
+apk_path="${1:?usage: verify-test-release.sh <apk> [expected-version-name] [expected-abi]}"
 expected_version_name="${2:-}"
+expected_abi="${3:-}"
 sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 
 test -f "$apk_path"
@@ -32,6 +33,9 @@ fi
 
 if [ -n "$expected_version_name" ]; then
     grep -q "versionName='$expected_version_name'" <<<"$badging"
+fi
+if [ -n "$expected_abi" ]; then
+    grep -q "native-code: '$expected_abi'" <<<"$badging"
 fi
 
 printf 'verified_test_release=%s\n' "$apk_path"

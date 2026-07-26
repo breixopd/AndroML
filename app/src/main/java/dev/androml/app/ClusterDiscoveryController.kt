@@ -3,8 +3,12 @@ package dev.androml.app
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Handler
+import android.os.Looper
 import java.io.Closeable
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +29,10 @@ class ClusterDiscoveryController(context: Context) : Closeable {
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
     private val closed = AtomicBoolean(false)
+    /** NSD can report the same service repeatedly while a resolve is pending. */
+    private val resolvingServices = ConcurrentHashMap<String, Long>()
+    private val resolveSequence = AtomicLong()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     val services: StateFlow<List<DiscoveredClusterEndpoint>> = _services.asStateFlow()
 
@@ -43,10 +51,21 @@ class ClusterDiscoveryController(context: Context) : Closeable {
             }
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 if (serviceInfo.serviceType != SERVICE_TYPE) return
+                val key = serviceInfo.serviceName.take(128)
+                val resolveToken = if (closed.get()) null else tryBeginResolve(key)
+                if (resolveToken == null) return
+                mainHandler.postDelayed(
+                    { resolvingServices.remove(key, resolveToken) },
+                    RESOLVE_TIMEOUT_MILLIS,
+                )
                 runCatching {
                     nsd.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
+                        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                            resolvingServices.remove(key, resolveToken)
+                        }
                         override fun onServiceResolved(resolved: NsdServiceInfo) {
+                            resolvingServices.remove(key, resolveToken)
+                            if (closed.get()) return
                             val host = resolved.host?.hostAddress ?: return
                             if (resolved.port !in 1024..65_535) return
                             _services.value = (_services.value + DiscoveredClusterEndpoint(
@@ -56,9 +75,10 @@ class ClusterDiscoveryController(context: Context) : Closeable {
                             )).distinctBy { "${it.host}:${it.port}" }.take(MAX_SERVICES)
                         }
                     })
-                }
+                }.onFailure { resolvingServices.remove(key, resolveToken) }
             }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                resolvingServices.remove(serviceInfo.serviceName.take(128))
                 _services.value = _services.value.filterNot { it.serviceName == serviceInfo.serviceName }
             }
         }
@@ -70,6 +90,7 @@ class ClusterDiscoveryController(context: Context) : Closeable {
     fun stopDiscovery() {
         discoveryListener?.let { listener -> runCatching { nsd.stopServiceDiscovery(listener) } }
         discoveryListener = null
+        resolvingServices.clear()
         _services.value = emptyList()
     }
 
@@ -112,5 +133,14 @@ class ClusterDiscoveryController(context: Context) : Closeable {
     private companion object {
         const val SERVICE_TYPE = "_androml._tcp."
         const val MAX_SERVICES = 32
+        const val MAX_IN_FLIGHT_RESOLVES = 8
+        const val RESOLVE_TIMEOUT_MILLIS = 15_000L
+    }
+
+    private fun tryBeginResolve(key: String): Long? = synchronized(resolvingServices) {
+        if (resolvingServices.size >= MAX_IN_FLIGHT_RESOLVES || resolvingServices.containsKey(key)) {
+            return null
+        }
+        resolveSequence.incrementAndGet().also { resolvingServices[key] = it }
     }
 }

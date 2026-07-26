@@ -8,6 +8,9 @@ import dev.androml.cluster.core.ClusterCapabilityAdvertisement
 import dev.androml.cluster.core.ClusterInferenceCodec
 import dev.androml.cluster.core.ClusterInferenceResult
 import dev.androml.cluster.core.ClusterInferenceTask
+import dev.androml.cluster.core.ClusterModelTransferAck
+import dev.androml.cluster.core.ClusterModelTransferChunk
+import dev.androml.cluster.core.ClusterModelTransferCodec
 import dev.androml.cluster.core.ClusterJobId
 import dev.androml.cluster.core.ClusterNode
 import dev.androml.cluster.core.ClusterPeer
@@ -43,8 +46,12 @@ import dev.androml.core.rag.CollectionId
 import dev.androml.core.rag.RetrievalQuery
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
+import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.model.DeviceProfile
 import dev.androml.core.model.ThermalStatus
+import dev.androml.core.model.HuggingFaceFileDescriptor
+import dev.androml.core.model.HuggingFaceModelReference
+import dev.androml.core.model.HuggingFaceRepositoryMetadata
 import dev.androml.core.security.MtlsContextFactory
 import dev.androml.core.security.TlsIdentityStore
 import dev.androml.core.security.X509CertificateCodec
@@ -53,11 +60,14 @@ import dev.androml.runtime.api.InferenceRequest
 import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeId
+import dev.androml.runtime.api.RuntimePackCatalog
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.core.workflow.WorkflowDocument
 import dev.androml.core.workflow.WorkflowValue
 import dev.androml.core.workflow.WorkflowValueCodec
 import java.util.UUID
+import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -69,6 +79,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 sealed interface ClusterControllerState {
     data object Disabled : ClusterControllerState
@@ -106,7 +119,11 @@ class ClusterController(
 ) {
     private val _state = MutableStateFlow<ClusterControllerState>(ClusterControllerState.Disabled)
     private val pairingInvites = ClusterPairingInviteIssuer()
+    private val transferLock = Mutex()
+    private val lastStagingCleanupEpochMillis = AtomicLong(0L)
     private var server: ClusterExecutionServer? = null
+    private val stagedTransfers = mutableMapOf<String, StagedTransfer>()
+    private data class StagedTransfer(val peer: PeerId, val size: Long, val expiresAt: Long)
     @Volatile
     private var localAdvertisement: ClusterCapabilityAdvertisement? = null
     val state: StateFlow<ClusterControllerState> = _state.asStateFlow()
@@ -160,17 +177,24 @@ class ClusterController(
             X509CertificateCodec.decodeDer(stored.certificateDer)
         }
         val material = MtlsContextFactory.serverMaterial(identity, certificates)
-        val pairedPeerMap = activePeers.associate { stored ->
-            stored.peer.fingerprint to stored.peer.id
-        }
         val candidate = ClusterExecutionServer(
             config = ClusterTransportConfig(host = "0.0.0.0", port = port),
             tlsMaterial = material,
-            pairedPeers = { pairedPeerMap },
+            // Resolve pairing/revocation on every request; startup snapshots must not
+            // keep a revoked peer authorized until the listener is restarted.
+            pairedPeers = {
+                peerRepository.snapshot()
+                    .filter { stored ->
+                        stored.peer.paired && !stored.peer.revoked &&
+                            stored.peer.certificateExpiresAtEpochMillis > System.currentTimeMillis()
+                    }
+                    .associate { stored -> stored.peer.fingerprint to stored.peer.id }
+            },
             executor = IdempotentClusterExecutor(
                 ledger = ledger,
                 handler = LocalClusterExecutionHandler(),
                 nowEpochMillis = { System.currentTimeMillis() },
+                maxConcurrentExecutions = advertisement.capabilities.maxConcurrentJobs,
             ),
             localAdvertisement = { localAdvertisement },
         )
@@ -255,17 +279,7 @@ class ClusterController(
         val jobId = ClusterJobId.parse("inference-${UUID.randomUUID()}")
         val deadline = System.currentTimeMillis() + timeoutMillis
 
-        peerRepository.snapshot()
-            .filter { it.peer.paired && !it.peer.revoked }
-            .forEach { stored ->
-                try {
-                    refreshPeer(stored.peer.id)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    // A stale/offline peer is excluded by the router below.
-                }
-            }
+        refreshEligiblePeers(deadline)
 
         val localNode = buildLocalNode(identity)
         val remoteNodes = peerRepository.snapshot().map { stored ->
@@ -330,17 +344,7 @@ class ClusterController(
         val jobId = ClusterJobId.parse("rag-${UUID.randomUUID()}")
         val deadline = System.currentTimeMillis() + timeoutMillis
 
-        peerRepository.snapshot()
-            .filter { it.peer.paired && !it.peer.revoked }
-            .forEach { stored ->
-                try {
-                    refreshPeer(stored.peer.id)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    // Offline nodes are omitted from the fan-out.
-                }
-            }
+        refreshEligiblePeers(deadline)
         val peers = peerRepository.snapshot()
             .filter { stored ->
                 stored.peer.paired &&
@@ -395,17 +399,7 @@ class ClusterController(
         val jobId = ClusterJobId.parse("workflow-${UUID.randomUUID()}")
         val deadline = System.currentTimeMillis() + timeoutMillis
 
-        peerRepository.snapshot()
-            .filter { it.peer.paired && !it.peer.revoked }
-            .forEach { stored ->
-                try {
-                    refreshPeer(stored.peer.id)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    // A stale/offline peer is excluded by the router below.
-                }
-            }
+        refreshEligiblePeers(deadline)
 
         val localNode = buildLocalNode(identity)
         val remoteNodes = peerRepository.snapshot().map { stored ->
@@ -455,6 +449,92 @@ class ClusterController(
             }
         }
         throw lastFailure ?: IllegalStateException("workflow stage deadline expired")
+    }
+
+    /** Transfers a verified artifact to a paired node only after explicit owner approval. */
+    suspend fun transferModel(
+        peerId: PeerId,
+        artifactHash: ContentHash,
+        ownerApproved: Boolean,
+        timeoutMillis: Long = 10 * 60 * 1_000L,
+    ): ClusterModelTransferAck = withContext(Dispatchers.IO) {
+        require(ownerApproved) { "model transfer requires explicit owner approval" }
+        require(timeoutMillis in 1_000L..30 * 60 * 1_000L) { "model transfer timeout is out of bounds" }
+        check(artifactStore.contains(artifactHash.value)) { "model artifact is not installed" }
+        val file = catalogRepository.fileForArtifact(artifactHash.value)
+            ?: throw IllegalArgumentException("model artifact metadata is unavailable")
+        val model = catalogRepository.snapshotModels().firstOrNull { record ->
+            record.modelId == file.modelId && record.revision == file.revision
+        } ?: throw IllegalArgumentException("model repository metadata is unavailable")
+        val reference = HuggingFaceModelReference.parse(file.modelId, file.revision)
+        val totalSize = file.sizeBytes
+        require(totalSize > 0L) { "empty model artifacts cannot be transferred" }
+        val peer = peerRepository.snapshot().firstOrNull { it.peer.id == peerId }
+            ?: throw IllegalArgumentException("cluster peer does not exist")
+        check(peer.peer.paired && !peer.peer.revoked) { "cluster peer is not paired" }
+        check(ClusterWorkload.ModelTransfer in peer.peer.capabilities.supportedWorkloads) {
+            "cluster peer does not support model transfer"
+        }
+        val identity = tlsIdentityStore.loadOrCreate(CLUSTER_TLS_ALIAS, CLUSTER_TLS_SUBJECT)
+        val peerCertificate = X509CertificateCodec.decodeDer(peer.certificateDer)
+        val transferId = "transfer-${UUID.randomUUID()}"
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        var offset = 0L
+        var lastAck = ClusterModelTransferAck(transferId, artifactHash, 0L, committed = false)
+        while (offset < totalSize && System.currentTimeMillis() < deadline) {
+            val bytes = readChunk(artifactHash.value, offset, totalSize)
+            val transferChunk = ClusterModelTransferChunk(
+                transferId = transferId,
+                artifactHash = artifactHash,
+                totalSizeBytes = totalSize,
+                offsetBytes = offset,
+                chunk = bytes,
+                finalChunk = offset + bytes.size == totalSize,
+                modelId = reference.modelId.value,
+                revision = reference.revision.value,
+                path = file.path,
+                license = model.license,
+                isPrivate = model.isPrivate,
+                isGated = model.isGated,
+            )
+            val payload = ClusterModelTransferCodec.encodeChunk(transferChunk)
+            val request = ClusterExecutionRequest(
+                sourcePeerId = clusterNodeId(identity.fingerprint),
+                request = ClusterRequest(
+                    jobId = ClusterJobId.parse("$transferId-${offset.toString(16)}"),
+                    attempt = 1,
+                    workload = ClusterWorkload.ModelTransfer,
+                    modelKey = artifactHash.value,
+                    modelHash = null,
+                    requiredRamBytes = 0L,
+                    deadlineEpochMillis = deadline,
+                    payloadHash = ContentHash.parse(sha256(payload)),
+                    idempotencyKey = "$transferId:$offset",
+                ),
+                payload = payload,
+            )
+            val response = ClusterExecutionClient(
+                clientIdentity = identity,
+                trustedServerCertificate = peerCertificate,
+                readTimeoutMillis = (deadline - System.currentTimeMillis()).coerceAtLeast(1_000L).toInt(),
+            ).execute(peer.peer.endpoint, request)
+            if (response.status != ClusterExecutionStatus.Completed &&
+                response.status != ClusterExecutionStatus.AlreadyCompleted
+            ) {
+                throw IllegalStateException(response.safeMessage ?: "model transfer failed")
+            }
+            val output = response.output ?: throw IllegalStateException("model transfer returned no acknowledgement")
+            lastAck = ClusterModelTransferCodec.decodeAck(output)
+            require(lastAck.transferId == transferId && lastAck.artifactHash == artifactHash) {
+                "model transfer acknowledgement does not match the request"
+            }
+            require(lastAck.nextOffsetBytes in (offset + 1)..totalSize) {
+                "model transfer acknowledgement did not advance"
+            }
+            offset = lastAck.nextOffsetBytes
+        }
+        check(lastAck.committed && offset == totalSize) { "model transfer did not commit before its deadline" }
+        lastAck
     }
 
     suspend fun executeRemote(
@@ -535,8 +615,171 @@ class ClusterController(
                         executeLocalWorkflowStage(ClusterWorkflowCodec.decodeTask(request.payload))
                     }
                 }
+                ClusterWorkload.ModelTransfer -> runBlocking(Dispatchers.IO) {
+                    executeLocalModelTransfer(request.sourcePeerId, request.payload)
+                }
             }
         }
+    }
+
+    private suspend fun executeLocalModelTransfer(sourcePeer: PeerId, payload: ByteArray): ByteArray {
+        maybeCleanupStaging()
+        return transferLock.withLock {
+            executeLocalModelTransferLocked(sourcePeer, payload)
+        }
+    }
+
+    private suspend fun executeLocalModelTransferLocked(sourcePeer: PeerId, payload: ByteArray): ByteArray {
+        val paired = peerRepository.snapshot().firstOrNull { it.peer.id == sourcePeer }
+        require(paired != null && paired.peer.paired && !paired.peer.revoked &&
+            paired.peer.certificateExpiresAtEpochMillis > System.currentTimeMillis()) {
+            "model transfer peer is not authorized"
+        }
+        val chunk = ClusterModelTransferCodec.decodeChunk(payload)
+        require(chunk.isPrivate || chunk.license != null) {
+            "model transfer metadata must include a license or private declaration"
+        }
+        if (artifactStore.contains(chunk.artifactHash.value)) {
+            if (catalogRepository.fileForArtifact(chunk.artifactHash.value) == null) {
+                registerTransferredMetadata(chunk)
+            }
+            return ClusterModelTransferCodec.encodeAck(
+                ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, chunk.totalSizeBytes, committed = true),
+            )
+        }
+        val transferKey = "${sourcePeer.value}:${chunk.transferId}"
+        synchronized(stagedTransfers) {
+            val now = System.currentTimeMillis()
+            stagedTransfers.entries.removeIf { it.value.expiresAt <= now }
+            val existing = stagedTransfers[transferKey]
+            if (existing == null) {
+                require(stagedTransfers.values.count { it.peer == sourcePeer } < MAX_ACTIVE_TRANSFERS_PER_PEER) {
+                    "too many active model transfers for peer"
+                }
+                require(stagedTransfers.values.filter { it.peer == sourcePeer }.sumOf { it.size } + chunk.totalSizeBytes <= MAX_STAGING_BYTES_PER_PEER) {
+                    "model transfer peer staging quota exceeded"
+                }
+                require(stagedTransfers.values.sumOf { it.size } + chunk.totalSizeBytes <= MAX_STAGING_BYTES) {
+                    "model transfer staging quota exceeded"
+                }
+                stagedTransfers[transferKey] = StagedTransfer(sourcePeer, chunk.totalSizeBytes, now + STAGING_EXPIRY_MILLIS)
+            } else {
+                require(existing.size == chunk.totalSizeBytes) { "model transfer size changed" }
+            }
+        }
+        val staged = artifactStore.beginResumable(
+            key = "cluster-${chunk.transferId}-${chunk.artifactHash.value.take(16)}",
+            expectedSha256 = chunk.artifactHash.value,
+            expectedSizeBytes = chunk.totalSizeBytes,
+        )
+        staged.use { resumable ->
+            val current = resumable.bytesWritten
+            if (current == chunk.totalSizeBytes && chunk.finalChunk) {
+                resumable.commit()
+                registerTransferredMetadata(chunk)
+                synchronized(stagedTransfers) { stagedTransfers.remove(transferKey) }
+                return ClusterModelTransferCodec.encodeAck(
+                    ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, chunk.totalSizeBytes, committed = true),
+                )
+            }
+            if (current > chunk.offsetBytes) {
+                return ClusterModelTransferCodec.encodeAck(
+                    ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, current, committed = false),
+                )
+            }
+            require(current == chunk.offsetBytes) { "model transfer chunk is not contiguous" }
+            resumable.appendFrom(ByteArrayInputStream(chunk.chunk), maxBytes = chunk.chunk.size.toLong())
+            val nextOffset = resumable.bytesWritten
+            val committed = if (chunk.finalChunk) {
+                require(nextOffset == chunk.totalSizeBytes) { "final model transfer chunk is incomplete" }
+                resumable.commit()
+                registerTransferredMetadata(chunk)
+                synchronized(stagedTransfers) { stagedTransfers.remove(transferKey) }
+                true
+            } else {
+                false
+            }
+            return ClusterModelTransferCodec.encodeAck(
+                ClusterModelTransferAck(chunk.transferId, chunk.artifactHash, nextOffset, committed),
+            )
+        }
+    }
+
+    private suspend fun registerTransferredMetadata(chunk: ClusterModelTransferChunk) {
+        val reference = HuggingFaceModelReference.parse(chunk.modelId, chunk.revision)
+        catalogRepository.saveMetadata(
+            HuggingFaceRepositoryMetadata(
+                reference = reference,
+                files = listOf(
+                    HuggingFaceFileDescriptor(
+                        path = chunk.path,
+                        sizeBytes = chunk.totalSizeBytes,
+                        sha256 = chunk.artifactHash.value,
+                    ),
+                ),
+                isPrivate = chunk.isPrivate,
+                isGated = chunk.isGated,
+                license = chunk.license,
+            ),
+        )
+        catalogRepository.markArtifactVerified(reference, chunk.path, chunk.artifactHash.value)
+    }
+
+    private suspend fun refreshEligiblePeers(deadlineEpochMillis: Long) = coroutineScope {
+        val remainingMillis = deadlineEpochMillis - System.currentTimeMillis()
+        if (remainingMillis <= 0L) return@coroutineScope
+        // Capability refresh is opportunistic. Reserve most of the caller's budget for
+        // actual execution and fall back to the last authenticated advertisement.
+        val refreshBudgetMillis = minOf(
+            PEER_REFRESH_TIMEOUT_MILLIS,
+            (remainingMillis / 4L).coerceAtLeast(1L),
+        )
+        peerRepository.snapshot()
+            .filter { it.peer.paired && !it.peer.revoked }
+            .map { stored ->
+                async(Dispatchers.IO) {
+                    try {
+                        withTimeoutOrNull(refreshBudgetMillis) {
+                            refreshPeer(stored.peer.id)
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            }
+            .awaitAll()
+    }
+
+    private fun maybeCleanupStaging() {
+        val now = System.currentTimeMillis()
+        val previous = lastStagingCleanupEpochMillis.get()
+        if (now - previous >= STAGING_CLEANUP_INTERVAL_MILLIS &&
+            lastStagingCleanupEpochMillis.compareAndSet(previous, now)
+        ) {
+            artifactStore.cleanupStaging(STAGING_EXPIRY_MILLIS)
+        }
+    }
+
+    private fun readChunk(artifactHash: String, offset: Long, totalSize: Long): ByteArray {
+        val length = minOf(ClusterModelTransferChunk.MAX_CHUNK_BYTES.toLong(), totalSize - offset).toInt()
+        val bytes = ByteArray(length)
+        artifactStore.open(artifactHash).use { input ->
+            var skipped = 0L
+            while (skipped < offset) {
+                val count = input.skip(offset - skipped)
+                if (count <= 0L) throw IllegalStateException("model artifact could not seek to transfer offset")
+                skipped += count
+            }
+            var read = 0
+            while (read < bytes.size) {
+                val count = input.read(bytes, read, bytes.size - read)
+                if (count < 0) throw IllegalStateException("model artifact ended before its declared size")
+                read += count
+            }
+        }
+        return bytes
     }
 
     private suspend fun executeLocalRag(taskPayload: ByteArray): ByteArray {
@@ -644,6 +887,14 @@ class ClusterController(
                 val modelHash = task.modelHash
                     ?: throw IllegalArgumentException("model workflow stage requires a model hash")
                 val profile = deviceProfileProvider()
+                val modelFile = catalogRepository.fileForArtifact(modelHash.value)
+                    ?: throw IllegalArgumentException("workflow model artifact is not in the local catalog")
+                val runtimeId = ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+                    ?.let(RuntimeId::parse)
+                    ?: throw IllegalArgumentException("workflow model format is unsupported")
+                check(RuntimePackCatalog.find(runtimeId)?.usable == true) {
+                    "workflow model runtime is not bundled in this build"
+                }
                 val result = ClusterInferenceCodec.decodeResult(
                     executeLocalInference(
                         ClusterInferenceTask(
@@ -655,7 +906,7 @@ class ClusterController(
                             kvCacheBytesPerToken = 0L,
                             cpuThreads = profile.cpuCoreCount.coerceIn(1, 8),
                             useAcceleration = false,
-                            runtimeId = RuntimeId.parse("litertlm").value,
+                            runtimeId = runtimeId.value,
                         ),
                     ),
                 )
@@ -692,6 +943,11 @@ class ClusterController(
             ?: throw IllegalArgumentException("requested model artifact is not in the local catalog")
         check(modelFile.artifactSha256 == task.modelHash.value && artifactStore.contains(task.modelHash.value)) {
             "requested model artifact is not installed"
+        }
+        val expectedRuntimeId = ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+            ?: throw IllegalArgumentException("requested model format is unsupported")
+        require(expectedRuntimeId == task.runtimeId) {
+            "requested runtime does not match the model artifact format"
         }
         val modelPath = artifactStore.fileFor(task.modelHash.value)
         val descriptor = ParcelFileDescriptor.open(modelPath, ParcelFileDescriptor.MODE_READ_ONLY)
@@ -767,6 +1023,7 @@ class ClusterController(
                     ClusterWorkload.InferenceReplica,
                     ClusterWorkload.WorkflowStage,
                     ClusterWorkload.RagSearch,
+                    ClusterWorkload.ModelTransfer,
                 ),
                 modelHashes = catalogRepository.installedArtifactHashes(),
                 maxConcurrentJobs = 1,
@@ -805,6 +1062,12 @@ class ClusterController(
         const val CAPABILITY_STALE_AFTER_MILLIS = 30_000L
         const val WORKFLOW_MODEL_STAGE = "model"
         const val WORKFLOW_RAG_STAGE = "rag"
+        const val MAX_ACTIVE_TRANSFERS_PER_PEER = 2
+        const val MAX_STAGING_BYTES = 16L shl 30
+        const val MAX_STAGING_BYTES_PER_PEER = 8L shl 30
+        const val PEER_REFRESH_TIMEOUT_MILLIS = 5_000L
+        const val STAGING_CLEANUP_INTERVAL_MILLIS = 10 * 60_000L
+        const val STAGING_EXPIRY_MILLIS = 30 * 60 * 1_000L
 
         fun sha256(value: ByteArray): String =
             java.security.MessageDigest.getInstance("SHA-256")

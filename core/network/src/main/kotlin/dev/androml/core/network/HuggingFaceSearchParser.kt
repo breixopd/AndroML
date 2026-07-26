@@ -14,6 +14,7 @@ import kotlinx.serialization.json.longOrNull
 class HuggingFaceSearchParser {
     fun parse(body: String): List<HuggingFaceSearchHit> {
         val elements = try {
+            JsonSafety.validate(body)
             Json.parseToJsonElement(body).jsonArray
         } catch (error: SerializationException) {
             throw HuggingFaceMetadataException(
@@ -26,6 +27,14 @@ class HuggingFaceSearchParser {
                 HuggingFaceMetadataError.InvalidJson,
                 "Hugging Face search response must be an array",
                 error,
+            )
+        } catch (error: StackOverflowError) {
+            throw HuggingFaceMetadataException(HuggingFaceMetadataError.InvalidJson, "Hugging Face search JSON is too deeply nested", error)
+        }
+        if (elements.size > MAX_SEARCH_RESULTS) {
+            throw HuggingFaceMetadataException(
+                HuggingFaceMetadataError.InvalidField,
+                "Hugging Face search response contains too many entries",
             )
         }
         return elements.mapIndexed { index, element ->
@@ -58,5 +67,9 @@ class HuggingFaceSearchParser {
                 error,
             )
         }
+    }
+
+    private companion object {
+        const val MAX_SEARCH_RESULTS = 1_000
     }
 }

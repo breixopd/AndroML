@@ -1,10 +1,13 @@
 package dev.androml.app
 
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -56,9 +59,12 @@ import androidx.work.WorkManager
 import dev.androml.core.database.ModelCatalogRepository
 import dev.androml.core.database.ModelFileEntity
 import dev.androml.core.database.ModelRecordEntity
+import dev.androml.cluster.core.ClusterInferenceTask
+import dev.androml.cluster.core.ContentHash
 import dev.androml.core.device.AndroidDeviceProfileCollector
 import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.DeviceProfile
+import dev.androml.core.model.AppSettings
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.model.ModelWorkload
@@ -75,6 +81,7 @@ import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
 import dev.androml.runtime.api.RuntimePackCatalog
+import dev.androml.runtime.api.TensorInput
 import dev.androml.optimizer.AutoOptimizer
 import java.util.Locale
 import java.util.UUID
@@ -109,6 +116,9 @@ private fun AndroMLApp() {
     val destinations = listOf("Home", "Playground", "Discover", "Library", "RAG", "Workflows", "API", "Cluster", "Settings")
     var selectedDestination by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
+    var appSettings by remember(context) {
+        mutableStateOf(AppSettingsStore.load(context))
+    }
     val application = context.applicationContext as AndroMLApplication
     val deviceProfile = remember(context) {
         AndroidDeviceProfileCollector(context.applicationContext).collect()
@@ -166,10 +176,12 @@ private fun AndroMLApp() {
             PlaygroundScreen(
                 modifier = Modifier.padding(paddingValues),
                 serviceClient = inferenceServiceClient,
+                clusterController = application.clusterController,
                 deviceProfile = deviceProfile,
                 installedModelFiles = catalogFiles,
                 artifactStore = application.artifactStore,
                 benchmarkRepository = application.runtimeBenchmarkRepository,
+                settings = appSettings,
             )
         } else if (selectedDestination == 2) {
             DiscoverScreen(
@@ -204,6 +216,7 @@ private fun AndroMLApp() {
                 modifier = Modifier.padding(paddingValues),
                 controller = apiController,
                 keyRepository = apiKeyRepository,
+                auditDao = application.catalogDatabase.toolAuditDao(),
                 tlsIdentityStore = application.apiTlsIdentityStore,
                 clientCertificateStore = application.apiClientCertificateStore,
             )
@@ -218,11 +231,15 @@ private fun AndroMLApp() {
         } else {
             SettingsScreen(
                 modifier = Modifier.padding(paddingValues),
-                context = context,
                 deviceProfile = deviceProfile,
                 releasePolicy = ReleasePolicy.testPeriod(),
                 runtimePacks = RuntimePackCatalog.production,
                 apiState = apiState,
+                settings = appSettings,
+                onSettingsChanged = { next ->
+                    appSettings = next
+                    AppSettingsStore.save(context, next)
+                },
             )
         }
     }
@@ -232,10 +249,12 @@ private fun AndroMLApp() {
 private fun PlaygroundScreen(
     modifier: Modifier = Modifier,
     serviceClient: InferenceServiceClient,
+    clusterController: ClusterController,
     deviceProfile: DeviceProfile,
     installedModelFiles: List<ModelFileEntity>,
     artifactStore: FileArtifactStore,
     benchmarkRepository: dev.androml.core.database.RuntimeBenchmarkRepository,
+    settings: AppSettings,
 ) {
     var prompt by remember { mutableStateOf("Say hello from the isolated runtime.") }
     var output by remember { mutableStateOf("") }
@@ -243,6 +262,45 @@ private fun PlaygroundScreen(
     var isRunning by remember { mutableStateOf(false) }
     var runJob by remember { mutableStateOf<Job?>(null) }
     var selectedWorkload by remember { mutableStateOf(ModelWorkload.TextGeneration) }
+    var tensorInput by remember { mutableStateOf<TensorInput?>(null) }
+    var tensorInputLabel by remember { mutableStateOf<String?>(null) }
+    var distributed by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val mediaPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                if (selectedWorkload == ModelWorkload.AudioClassification) {
+                    TensorPreprocessors.wav(stream)
+                } else {
+                    val bitmap = BitmapFactory.decodeStream(stream)
+                        ?: error("selected image could not be decoded")
+                    try {
+                        TensorPreprocessors.image(bitmap)
+                    } finally {
+                        bitmap.recycle()
+                    }
+                }
+            } ?: error("selected file could not be opened")
+        }.onSuccess { input ->
+            tensorInput = input
+            tensorInputLabel = if (selectedWorkload == ModelWorkload.AudioClassification) {
+                "16 kHz mono PCM16 WAV"
+            } else {
+                "224 × 224 RGB NHWC"
+            }
+            status = "Prepared ${input.elementCount} ${input.dataType.name} tensor"
+        }.onFailure { error ->
+            tensorInput = null
+            tensorInputLabel = null
+            status = error.message?.take(256) ?: "Media preprocessing failed"
+        }
+    }
+    LaunchedEffect(selectedWorkload) {
+        tensorInput = null
+        tensorInputLabel = null
+        if (selectedWorkload != ModelWorkload.TextGeneration) distributed = false
+    }
     val runnableFiles = remember(installedModelFiles, selectedWorkload) {
         installedModelFiles
             .filter {
@@ -260,6 +318,11 @@ private fun PlaygroundScreen(
     val scope = rememberCoroutineScope()
     val optimizer = remember { AutoOptimizer() }
     val selectedRuntimeId = selectedFile?.let { ModelFormatClassifier.forPath(it.path)?.runtimeId }
+    val compatibleRuntimeDescriptors = selectedRuntimeId
+        ?.let { RuntimePackCatalog.find(RuntimeId.parse(it)) }
+        ?.takeIf { it.usable }
+        ?.let { listOf(it.descriptor) }
+        .orEmpty()
     val model = remember(selectedFile?.artifactSha256, selectedFile?.sizeBytes, selectedWorkload) {
         ModelRequirements(
             workload = selectedWorkload,
@@ -267,15 +330,24 @@ private fun PlaygroundScreen(
             contextTokens = 2048,
         )
     }
-    val optimization = remember(deviceProfile, selectedFile?.artifactSha256, selectedFile?.sizeBytes, selectedWorkload) {
+    val optimizationDevice = remember(deviceProfile, settings.thermalGuard) {
+        if (settings.thermalGuard) {
+            deviceProfile
+        } else {
+            deviceProfile.copy(thermalStatus = dev.androml.core.model.ThermalStatus.Nominal)
+        }
+    }
+    val optimization = remember(
+        optimizationDevice,
+        selectedFile?.artifactSha256,
+        selectedFile?.sizeBytes,
+        selectedWorkload,
+        settings.autoOptimize,
+    ) {
         optimizer.select(
-            device = deviceProfile,
+            device = optimizationDevice,
             model = model,
-        runtimes = if (selectedFile == null) {
-                emptyList()
-            } else {
-                RuntimePackCatalog.bundled.map { it.descriptor }
-            },
+            runtimes = compatibleRuntimeDescriptors,
         )
     }
     val benchmarkEntities by remember(deviceProfile.stableKey, selectedFile?.artifactSha256) {
@@ -299,10 +371,10 @@ private fun PlaygroundScreen(
             optimization
         } else {
             optimizer.select(
-                device = deviceProfile,
+                device = optimizationDevice,
                 model = model,
-                runtimes = RuntimePackCatalog.bundled.map { it.descriptor },
-                benchmarks = benchmarkObservations,
+                runtimes = compatibleRuntimeDescriptors,
+                benchmarks = if (settings.autoOptimize) benchmarkObservations else emptyList(),
             )
         }
     }
@@ -332,6 +404,30 @@ private fun PlaygroundScreen(
         runJob = scope.launch {
             var session: OpenedInferenceSession? = null
             try {
+                if (distributed && selectedWorkload == ModelWorkload.TextGeneration) {
+                    val artifactHash = selectedFile?.artifactSha256
+                        ?: error("a verified model artifact is required for distributed inference")
+                    val runtimeId = selectedRuntimeId ?: error("the model format has no runtime")
+                    val execution = withContext(Dispatchers.IO) {
+                        clusterController.executeBestInference(
+                            ClusterInferenceTask(
+                                modelHash = ContentHash.parse(artifactHash),
+                                prompt = prompt,
+                                maxNewTokens = 256,
+                                temperature = 0.7,
+                                contextTokens = 2_048,
+                                kvCacheBytesPerToken = 0L,
+                                cpuThreads = optimizedWithBenchmarks.configuration?.cpuThreads
+                                    ?: deviceProfile.cpuCoreCount.coerceIn(1, 8),
+                                useAcceleration = optimizedWithBenchmarks.configuration?.useAcceleration ?: false,
+                                runtimeId = runtimeId,
+                            ),
+                        )
+                    }
+                    output = execution.result.text
+                    status = "Complete · ${execution.placement.target.value} · ${execution.result.runtimeId}"
+                    return@launch
+                }
                 session = serviceClient.openSession(
                     model = model,
                     configuration = RuntimeConfiguration(
@@ -354,6 +450,7 @@ private fun PlaygroundScreen(
                     prompt = prompt,
                     maxNewTokens = 256,
                     temperature = 0.7,
+                    tensorInput = tensorInput,
                 )
                 serviceClient.stream(session, request).collect { event ->
                     when (event) {
@@ -423,15 +520,42 @@ private fun PlaygroundScreen(
                             onClick = { selectedWorkload = ModelWorkload.TextEmbedding },
                             label = { Text("Embeddings") },
                         )
+                        if (selectedWorkload == ModelWorkload.TextGeneration) {
+                            FilterChip(
+                                selected = distributed,
+                                onClick = { distributed = !distributed },
+                                label = { Text("Distributed") },
+                            )
+                        }
+                    }
+                    listOf(
+                        listOf(ModelWorkload.ImageClassification, ModelWorkload.ObjectDetection),
+                        listOf(ModelWorkload.ImageSegmentation, ModelWorkload.AudioClassification),
+                    ).forEach { rowWorkloads ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            rowWorkloads.forEach { workload ->
+                                FilterChip(
+                                    selected = selectedWorkload == workload,
+                                    onClick = { selectedWorkload = workload },
+                                    label = {
+                                        Text(
+                                            when (workload) {
+                                                ModelWorkload.ImageClassification -> "Image class."
+                                                ModelWorkload.ObjectDetection -> "Detection"
+                                                ModelWorkload.ImageSegmentation -> "Segmentation"
+                                                ModelWorkload.AudioClassification -> "Audio class."
+                                                else -> workload.name
+                                            },
+                                        )
+                                    },
+                                )
+                            }
+                        }
                     }
                     Spacer(Modifier.height(6.dp))
                     if (runnableFiles.isEmpty()) {
                         Text(
-                            if (selectedWorkload == ModelWorkload.TextGeneration) {
-                                "No verified text-generation model artifact is installed. Discover and verify one from Hugging Face first."
-                            } else {
-                                "No verified embedding model artifact is installed."
-                            },
+                            "No verified ${selectedWorkload.name} model artifact is installed. Discover and verify one from Hugging Face first.",
                         )
                     } else {
                         Text("Select a content-addressed model artifact:", style = MaterialTheme.typography.bodySmall)
@@ -453,10 +577,17 @@ private fun PlaygroundScreen(
                     Text("Runtime boundary", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text("$status\nNetwork access is absent from the runtime-service module.")
+                    if (distributed && selectedWorkload == ModelWorkload.TextGeneration) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Distributed mode sends the complete verified request to a paired, freshly-capable node over mTLS; the model must already be installed there.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         optimizedWithBenchmarks.selected?.let { candidate ->
-                            "Auto-pick: ${candidate.descriptor.id.value} · ${candidate.descriptor.acceleration.name.lowercase(Locale.ROOT)} · score ${"%.1f".format(Locale.ROOT, candidate.score ?: 0.0)}"
+                            "${if (settings.autoOptimize) "Auto-pick" else "Runtime default"}: ${candidate.descriptor.id.value} · ${candidate.descriptor.acceleration.name.lowercase(Locale.ROOT)} · score ${"%.1f".format(Locale.ROOT, candidate.score ?: 0.0)}"
                         } ?: "Auto-pick: no compatible runtime can be proven on this device",
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -477,31 +608,77 @@ private fun PlaygroundScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        if (selectedWorkload == ModelWorkload.TextGeneration) "Text generation"
-                        else "Text embedding",
+                        when (selectedWorkload) {
+                            ModelWorkload.TextGeneration -> "Text generation"
+                            ModelWorkload.TextEmbedding -> "Text embedding"
+                            ModelWorkload.AudioClassification -> "Audio classification"
+                            ModelWorkload.ImageClassification -> "Image classification"
+                            ModelWorkload.ObjectDetection -> "Object detection"
+                            ModelWorkload.ImageSegmentation -> "Image segmentation"
+                            else -> selectedWorkload.name
+                        },
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = prompt,
-                        onValueChange = { prompt = it.take(InferenceRequest.MAX_PROMPT_CHARS) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = {
-                            Text(if (selectedWorkload == ModelWorkload.TextGeneration) "Prompt" else "Text to embed")
-                        },
-                        minLines = 3,
-                    )
+                    if (selectedWorkload == ModelWorkload.TextGeneration ||
+                        selectedWorkload == ModelWorkload.TextEmbedding
+                    ) {
+                        OutlinedTextField(
+                            value = prompt,
+                            onValueChange = { prompt = it.take(InferenceRequest.MAX_PROMPT_CHARS) },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = {
+                                Text(if (selectedWorkload == ModelWorkload.TextGeneration) "Prompt" else "Text to embed")
+                            },
+                            minLines = 3,
+                        )
+                    } else {
+                        Button(
+                            onClick = {
+                                mediaPicker.launch(
+                                    if (selectedWorkload == ModelWorkload.AudioClassification) {
+                                        arrayOf("audio/wav", "audio/x-wav")
+                                    } else {
+                                        arrayOf("image/*")
+                                    },
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                when {
+                                    tensorInput != null -> "Replace input media"
+                                    selectedWorkload == ModelWorkload.AudioClassification -> "Choose WAV audio"
+                                    else -> "Choose image"
+                                },
+                            )
+                        }
+                        tensorInputLabel?.let { label ->
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "$label · ${tensorInput?.elementCount ?: 0} values",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Text(
+                            "Preprocessing is explicit and bounded: images become 224×224 RGB float32 [0,1]; WAV audio becomes mono 16 kHz float32.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = ::runPrompt,
-                        enabled = isRunning || optimizedWithBenchmarks.selected != null,
+                        enabled = isRunning || (optimizedWithBenchmarks.selected != null &&
+                            (selectedWorkload == ModelWorkload.TextGeneration ||
+                                selectedWorkload == ModelWorkload.TextEmbedding ||
+                                tensorInput != null)),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
                             when {
                                 isRunning -> "Stop"
                                 optimizedWithBenchmarks.selected == null -> "No compatible runtime"
-                                else -> "Run with auto-optimisation"
+                                else -> if (settings.autoOptimize) "Run with auto-optimisation" else "Run with runtime defaults"
                             },
                         )
                     }
@@ -1272,20 +1449,6 @@ private fun StatusCard(title: String, value: String, detail: String) {
             Spacer(Modifier.height(4.dp))
             Text(detail, style = MaterialTheme.typography.bodyMedium)
         }
-    }
-}
-
-@Composable
-private fun PlaceholderDestination(name: String, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(24.dp),
-    ) {
-        Text(name, style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(8.dp))
-        Text("This surface is reserved for the next implementation slice.")
-        Spacer(Modifier.width(1.dp))
     }
 }
 

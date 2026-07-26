@@ -36,7 +36,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0" "build-tools;37.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Build for CodeQL
         run: ./scripts/verify-all.sh --ci
       - name: Analyze

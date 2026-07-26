@@ -7,6 +7,12 @@ import androidx.room.Query
 
 @Dao
 interface ApiKeyDao {
+    @Query("SELECT COUNT(*) FROM api_keys")
+    suspend fun countAll(): Int
+
+    @Query("SELECT COUNT(*) FROM api_keys WHERE revokedAtEpochMillis IS NULL AND (expiresAtEpochMillis IS NULL OR expiresAtEpochMillis > :nowEpochMillis)")
+    suspend fun countActive(nowEpochMillis: Long): Int
+
     @Query("SELECT * FROM api_keys ORDER BY createdAtEpochMillis DESC, id ASC")
     suspend fun list(): List<ApiKeyEntity>
 

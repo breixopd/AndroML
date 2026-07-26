@@ -20,6 +20,15 @@ abstract class WorkflowEventDao : DurableWorkflowEventStore {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertEntities(events: List<WorkflowEventEntity>)
 
+    @Query("SELECT COUNT(*) FROM workflow_events")
+    protected abstract suspend fun countAllEntities(): Long
+
+    @Query("SELECT COUNT(DISTINCT runId) FROM workflow_events")
+    protected abstract suspend fun countRuns(): Long
+
+    @Query("SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM workflow_events")
+    protected abstract suspend fun totalPayloadCharacters(): Long
+
     @Transaction
     override suspend fun append(
         runId: RunId,
@@ -36,13 +45,27 @@ abstract class WorkflowEventDao : DurableWorkflowEventStore {
         if (existing.size.toLong() != expectedSequence && newEvents.isNotEmpty()) {
             throw WorkflowConcurrencyException("workflow event sequence changed")
         }
+        val encodedEvents = newEvents.map(WorkflowEventCodec::encode)
+        require(existing.size + newEvents.size <= MAX_EVENTS_PER_RUN) {
+            "workflow run event limit is exhausted"
+        }
+        if (existing.isEmpty() && newEvents.isNotEmpty()) {
+            require(countRuns() < MAX_STORED_RUNS) { "workflow run storage limit is exhausted" }
+        }
+        require(countAllEntities() + newEvents.size <= MAX_STORED_EVENTS) {
+            "workflow event storage limit is exhausted"
+        }
+        require(
+            totalPayloadCharacters() + encodedEvents.sumOf { it.payload.length.toLong() } <=
+                MAX_STORED_PAYLOAD_CHARACTERS,
+        ) { "workflow event payload storage limit is exhausted" }
         val stored = newEvents.mapIndexed { index, event ->
             StoredWorkflowEvent(expectedSequence + index + 1L, event)
         }
         if (stored.isNotEmpty()) {
             insertEntities(
-                stored.map { item ->
-                    val encoded = WorkflowEventCodec.encode(item.event)
+                stored.mapIndexed { index, item ->
+                    val encoded = encodedEvents[index]
                     WorkflowEventEntity(
                         runId = runId.value,
                         sequence = item.sequence,
@@ -68,4 +91,11 @@ abstract class WorkflowEventDao : DurableWorkflowEventStore {
                 ),
             )
         }
+
+    private companion object {
+        const val MAX_EVENTS_PER_RUN = 512
+        const val MAX_STORED_RUNS = 1_024L
+        const val MAX_STORED_EVENTS = 8_192L
+        const val MAX_STORED_PAYLOAD_CHARACTERS = 32L * 1024 * 1024
+    }
 }

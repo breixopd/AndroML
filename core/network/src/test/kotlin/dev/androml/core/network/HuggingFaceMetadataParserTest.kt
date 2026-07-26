@@ -3,8 +3,8 @@ package dev.androml.core.network
 import dev.androml.core.model.HuggingFaceModelReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Assert.assertThrows
 import org.junit.Test
+import org.junit.Assert.assertThrows
 
 class HuggingFaceMetadataParserTest {
     private val reference = HuggingFaceModelReference.parse(
@@ -99,4 +99,11 @@ class HuggingFaceMetadataParserTest {
           ]
         }
         """.trimIndent()
+    @Test
+    fun rejectsDeeplyNestedJsonBeforeRecursiveParsing() {
+        val body = buildString { append('{'); repeat(256) { append("\"x\":[") }; append("null"); repeat(256) { append("]}") } }
+        assertThrows(HuggingFaceMetadataException::class.java) {
+            HuggingFaceMetadataParser().parse(reference, body)
+        }
+    }
 }

@@ -168,6 +168,11 @@ class InferenceServiceClient(context: Context) {
                     putString(InferenceServiceProtocol.PROMPT_KEY, request.prompt)
                     putInt(InferenceServiceProtocol.MAX_NEW_TOKENS_KEY, request.maxNewTokens)
                     putDouble(InferenceServiceProtocol.TEMPERATURE_KEY, request.temperature)
+                    request.tensorInput?.let { input ->
+                        putByteArray(InferenceServiceProtocol.TENSOR_INPUT_DATA_KEY, input.data)
+                        putLongArray(InferenceServiceProtocol.TENSOR_INPUT_SHAPE_KEY, input.shape)
+                        putString(InferenceServiceProtocol.TENSOR_INPUT_TYPE_KEY, input.dataType.name)
+                    }
                 },
             )
             for (event in channel) {

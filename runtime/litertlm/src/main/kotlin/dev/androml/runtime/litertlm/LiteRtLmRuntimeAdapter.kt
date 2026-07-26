@@ -21,6 +21,7 @@ import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.api.RuntimeIncompatibilityReason
 import dev.androml.runtime.api.RuntimeSession
 import dev.androml.runtime.api.SessionId
+import dev.androml.runtime.api.estimatedPeakMemoryBytes
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
@@ -52,7 +53,7 @@ class LiteRtLmRuntimeAdapter(
         return RuntimeCompatibilityReport(
             compatible = reasons.isEmpty(),
             reasons = reasons,
-            estimatedPeakMemoryBytes = model.estimatedWorkingSetBytes + descriptor.memoryOverheadBytes,
+            estimatedPeakMemoryBytes = descriptor.estimatedPeakMemoryBytes(model),
         )
     }
 

@@ -4,9 +4,10 @@ This policy is active until the owner explicitly approves store publication.
 
 ## Allowed distribution
 
-Only the signed OSS APK attached to a GitHub Release may be distributed. A release must be created from a protected `v<semver>` tag and contain:
+Only the signed OSS APKs attached to a GitHub Release may be distributed. A release must be created from a protected `v<semver>` tag and contain:
 
 - `androml-oss-universal-v<semver>.apk`.
+- `androml-oss-arm64-v8a-v<semver>.apk` for arm64-only installs.
 - SHA-256 and SHA-512 checksum files.
 - A JSON manifest containing the source commit, package ID, and signing-certificate digest.
 - The release changelog.

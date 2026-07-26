@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import dev.androml.core.api.ApiScope
 import dev.androml.core.api.ApiKeyRecord
 import dev.androml.core.database.ApiKeyRepository
+import dev.androml.core.database.ToolAuditDao
+import dev.androml.core.database.ToolAuditEntity
 import dev.androml.core.security.ApiClientCertificateRecord
 import dev.androml.core.security.ApiClientCertificateStore
 import dev.androml.core.security.TlsIdentityStore
@@ -52,6 +54,7 @@ fun ApiScreen(
     modifier: Modifier = Modifier,
     controller: LocalApiController,
     keyRepository: ApiKeyRepository,
+    auditDao: ToolAuditDao,
     tlsIdentityStore: TlsIdentityStore,
     clientCertificateStore: ApiClientCertificateStore,
 ) {
@@ -71,6 +74,7 @@ fun ApiScreen(
     var tlsSummary by remember { mutableStateOf<TlsIdentitySummary?>(null) }
     var tlsCertificatePem by remember { mutableStateOf<String?>(null) }
     var tlsBusy by remember { mutableStateOf(false) }
+    var auditEvents by remember { mutableStateOf<List<ToolAuditEntity>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
     fun refreshKeys() {
@@ -82,6 +86,12 @@ fun ApiScreen(
     fun refreshClientCertificates() {
         scope.launch {
             clientCertificates = withContext(Dispatchers.IO) { clientCertificateStore.snapshot() }
+        }
+    }
+
+    fun refreshAuditEvents() {
+        scope.launch {
+            auditEvents = withContext(Dispatchers.IO) { auditDao.recent(50) }
         }
     }
 
@@ -102,6 +112,16 @@ fun ApiScreen(
             throw error
         } catch (_: Throwable) {
             message = "Trusted client certificate storage could not be read"
+        }
+    }
+
+    LaunchedEffect(auditDao) {
+        try {
+            refreshAuditEvents()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            message = "Audit history could not be read"
         }
     }
 
@@ -484,6 +504,41 @@ fun ApiScreen(
                             enabled = !tlsBusy && apiState !is LocalApiState.Running,
                         ) {
                             Text(if (tlsBusy) "Rotating…" else "Rotate identity")
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            "Tool audit history",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = ::refreshAuditEvents, enabled = !busy) {
+                            Text("Refresh")
+                        }
+                    }
+                    Text(
+                        "Only event type, tool ID, policy class, success, timestamps, and one-way hashes are retained.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    if (auditEvents.isEmpty()) {
+                        Text("No tool events recorded yet.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        auditEvents.take(12).forEach { event ->
+                            Text(
+                                "${event.toolId} · ${event.sideEffect} · ${if (event.success) "ok" else "failed"} · ${Instant.ofEpochMilli(event.occurredAtEpochMillis)}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                "args ${event.argumentHash.take(16)}…",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
                     }
                 }

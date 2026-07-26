@@ -8,6 +8,8 @@ import dev.androml.api.server.ApiServerConfig
 import dev.androml.api.server.ChatCompletionRequest
 import dev.androml.api.server.ChatDelta
 import dev.androml.api.server.EmbeddingsRequest
+import dev.androml.api.server.TensorInferenceRequest
+import dev.androml.api.server.TensorInferenceResponse
 import dev.androml.api.server.ApiFeatureGateway
 import dev.androml.core.api.BindMode
 import dev.androml.core.database.ApiKeyRepository
@@ -22,6 +24,8 @@ import dev.androml.core.files.FileArtifactStore
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.ModelFormatClassifier
+import dev.androml.core.model.AppSettings
+import dev.androml.core.model.ThermalStatus
 import dev.androml.core.network.HuggingFaceArtifactDownloader
 import dev.androml.core.network.HuggingFaceModelClient
 import dev.androml.core.security.AndroidKeystoreSecretStore
@@ -36,8 +40,14 @@ import dev.androml.runtime.api.InferenceRequestId
 import dev.androml.runtime.api.RuntimeConfiguration
 import dev.androml.runtime.api.RuntimeId
 import dev.androml.runtime.api.RuntimePackCatalog
+import dev.androml.runtime.api.TensorDataType
+import dev.androml.runtime.api.TensorInput
 import dev.androml.runtime.service.InferenceServiceClient
 import dev.androml.runtime.service.OpenedInferenceSession
+import dev.androml.runtime.llamacpp.LlamaCppRuntimeAvailability
+import dev.androml.optimizer.AutoOptimizer
+import dev.androml.optimizer.OptimizationPolicy
+import dev.androml.runtime.api.AccelerationBackend
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -57,6 +67,7 @@ import java.util.concurrent.TimeUnit
 class AndroMLApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        LlamaCppRuntimeAvailability.advertise()
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             CLUSTER_HEARTBEAT_WORK_NAME,
             ExistingPeriodicWorkPolicy.KEEP,
@@ -93,7 +104,17 @@ class AndroMLApplication : Application() {
     }
 
     val ragRepository: RagRepository by lazy {
-        RagRepository(catalogDatabase.ragDao())
+        RagRepository(
+            dao = catalogDatabase.ragDao(),
+            embeddingProvider = RuntimeRagEmbeddingProvider(
+                catalogRepository = catalogRepository,
+                artifactStore = artifactStore,
+                inferenceServiceClient = inferenceServiceClient,
+                deviceProfileProvider = {
+                    AndroidDeviceProfileCollector(applicationContext).collect()
+                },
+            ),
+        )
     }
 
     val runtimeBenchmarkRepository: RuntimeBenchmarkRepository by lazy {
@@ -118,6 +139,10 @@ class AndroMLApplication : Application() {
 
     val workflowDefinitionRepository: dev.androml.core.database.WorkflowDefinitionRepository by lazy {
         dev.androml.core.database.WorkflowDefinitionRepository(catalogDatabase.workflowDefinitionDao())
+    }
+
+    val approvalStore: DurableApprovalStore by lazy {
+        DurableApprovalStore(catalogDatabase.pendingApprovalDao(), secretStore)
     }
 
     val apiTlsIdentityStore: TlsIdentityStore by lazy {
@@ -162,6 +187,8 @@ class AndroMLApplication : Application() {
             deviceProfileProvider = {
                 AndroidDeviceProfileCollector(applicationContext).collect()
             },
+            approvalStore = approvalStore,
+            auditSink = RoomToolAuditSink(catalogDatabase.toolAuditDao()),
         )
     }
 
@@ -176,10 +203,12 @@ class AndroMLApplication : Application() {
             },
             apiTlsIdentityStore = apiTlsIdentityStore,
             clientCertificateStore = apiClientCertificateStore,
+            settingsProvider = { AppSettingsStore.load(this@AndroMLApplication) },
             features = LocalApiFeatureGateway(
                 workflowController = workflowController,
                 workflowRepository = workflowDefinitionRepository,
                 clusterController = clusterController,
+                auditDao = catalogDatabase.toolAuditDao(),
             ),
         )
     }
@@ -218,6 +247,7 @@ class LocalApiController(
     private val deviceProfileProvider: () -> dev.androml.core.model.DeviceProfile,
     private val apiTlsIdentityStore: TlsIdentityStore,
     private val clientCertificateStore: ApiClientCertificateStore,
+    private val settingsProvider: () -> AppSettings,
     private val features: ApiFeatureGateway,
 ) {
     private var server: AndroMlApiServer? = null
@@ -275,6 +305,7 @@ class LocalApiController(
                 catalogRepository = catalogRepository,
                 artifactStore = artifactStore,
                 deviceProfileProvider = deviceProfileProvider,
+                settingsProvider = settingsProvider,
             ),
             onKeyUsed = { id ->
                 try {
@@ -323,7 +354,10 @@ private class IsolatedRuntimeApiGateway(
     private val catalogRepository: ModelCatalogRepository,
     private val artifactStore: FileArtifactStore,
     private val deviceProfileProvider: () -> dev.androml.core.model.DeviceProfile,
+    private val settingsProvider: () -> AppSettings,
 ) : ApiInferenceGateway {
+    private val optimizer = AutoOptimizer()
+
     override fun streamChat(request: ChatCompletionRequest): Flow<ChatDelta> = flow {
         val device = deviceProfileProvider()
         val modelFile = catalogRepository.filesForModelKey(request.model)
@@ -336,6 +370,12 @@ private class IsolatedRuntimeApiGateway(
         check(RuntimePackCatalog.find(runtimeId)?.usable == true) {
             "the runtime for ${modelFile.path.substringAfterLast('.').uppercase()} is not bundled in this build"
         }
+        val modelRequirements = ModelRequirements(
+            workload = ModelWorkload.TextGeneration,
+            weightBytes = modelFile.sizeBytes,
+            contextTokens = 2_048,
+        )
+        val configuration = optimizedConfiguration(device, modelRequirements, runtimeId)
         val artifactHash = modelFile.artifactSha256
             ?: throw IllegalArgumentException("requested model artifact is not verified")
         check(artifactStore.contains(artifactHash)) { "requested model artifact is missing" }
@@ -346,16 +386,8 @@ private class IsolatedRuntimeApiGateway(
         var session: OpenedInferenceSession? = null
         try {
             session = inferenceServiceClient.openSession(
-                model = ModelRequirements(
-                    workload = ModelWorkload.TextGeneration,
-                    weightBytes = modelFile.sizeBytes,
-                    contextTokens = 2048,
-                ),
-                configuration = RuntimeConfiguration(
-                    cpuThreads = device.cpuCoreCount.coerceIn(1, 8),
-                    contextTokens = 2048,
-                    useAcceleration = false,
-                ),
+                model = modelRequirements,
+                configuration = configuration,
                 runtimeId = runtimeId,
                 modelFile = descriptor,
             )
@@ -395,6 +427,12 @@ private class IsolatedRuntimeApiGateway(
         check(artifactStore.contains(artifactHash)) { "requested model artifact is missing" }
         val runtimeId = RuntimeId.parse(ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
             ?: throw IllegalArgumentException("requested model format is unsupported"))
+        val modelRequirements = ModelRequirements(
+            workload = ModelWorkload.TextEmbedding,
+            weightBytes = modelFile.sizeBytes,
+            contextTokens = 512,
+        )
+        val configuration = optimizedConfiguration(device, modelRequirements, runtimeId)
         val descriptor = ParcelFileDescriptor.open(
             artifactStore.fileFor(artifactHash),
             ParcelFileDescriptor.MODE_READ_ONLY,
@@ -402,16 +440,8 @@ private class IsolatedRuntimeApiGateway(
         var session: OpenedInferenceSession? = null
         try {
             session = inferenceServiceClient.openSession(
-                model = ModelRequirements(
-                    workload = ModelWorkload.TextEmbedding,
-                    weightBytes = modelFile.sizeBytes,
-                    contextTokens = 512,
-                ),
-                configuration = RuntimeConfiguration(
-                    cpuThreads = device.cpuCoreCount.coerceIn(1, 8),
-                    contextTokens = 512,
-                    useAcceleration = false,
-                ),
+                model = modelRequirements,
+                configuration = configuration,
                 runtimeId = runtimeId,
                 modelFile = descriptor,
             )
@@ -436,6 +466,110 @@ private class IsolatedRuntimeApiGateway(
             session?.let(inferenceServiceClient::closeSession)
             descriptor.close()
         }
+    }
+
+    override suspend fun tensorInference(request: TensorInferenceRequest): TensorInferenceResponse =
+        withContext(Dispatchers.IO) {
+            val workload = runCatching { ModelWorkload.valueOf(request.workload) }
+                .getOrElse { throw IllegalArgumentException("requested tensor workload is unsupported") }
+            require(
+                workload in setOf(
+                    ModelWorkload.ImageClassification,
+                    ModelWorkload.ObjectDetection,
+                    ModelWorkload.ImageSegmentation,
+                    ModelWorkload.AudioClassification,
+                ),
+            ) { "requested tensor workload is unsupported" }
+            val modelFile = catalogRepository.filesForModelKey(request.model)
+                .firstOrNull { ModelFormatClassifier.supports(it.path, workload) }
+                ?: throw IllegalArgumentException("requested model has no supported tensor artifact")
+            val artifactHash = modelFile.artifactSha256
+                ?: throw IllegalArgumentException("requested model artifact is not verified")
+            check(artifactStore.contains(artifactHash)) { "requested model artifact is missing" }
+            val runtimeId = RuntimeId.parse(ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
+                ?: throw IllegalArgumentException("requested model format is unsupported"))
+            val modelRequirements = ModelRequirements(
+                workload = workload,
+                weightBytes = modelFile.sizeBytes,
+                contextTokens = 1,
+            )
+            val configuration = optimizedConfiguration(deviceProfileProvider(), modelRequirements, runtimeId)
+            val descriptor = ParcelFileDescriptor.open(
+                artifactStore.fileFor(artifactHash),
+                ParcelFileDescriptor.MODE_READ_ONLY,
+            )
+            var session: OpenedInferenceSession? = null
+            try {
+                session = inferenceServiceClient.openSession(
+                    model = modelRequirements,
+                    configuration = configuration,
+                    runtimeId = runtimeId,
+                    modelFile = descriptor,
+                )
+                val values = mutableListOf<Double>()
+                inferenceServiceClient.stream(
+                    session,
+                    InferenceRequest(
+                        id = InferenceRequestId.parse("tensor-${UUID.randomUUID()}"),
+                        prompt = "tensor",
+                        maxNewTokens = 1,
+                        temperature = 0.0,
+                        tensorInput = TensorInput(
+                            data = request.data,
+                            shape = request.shape,
+                            dataType = runCatching { TensorDataType.valueOf(request.dataType) }
+                                .getOrElse { throw IllegalArgumentException("tensor data type is unsupported") },
+                        ),
+                    ),
+                ).collect { event ->
+                    when (event) {
+                        is InferenceEvent.Token -> values += parseEmbeddingValues(event.text)
+                        is InferenceEvent.Failed -> error(event.safeMessage)
+                        is InferenceEvent.Cancelled -> error("tensor request was cancelled")
+                        is InferenceEvent.Started, is InferenceEvent.Completed -> Unit
+                    }
+                }
+                require(values.isNotEmpty()) { "tensor runtime returned no output" }
+                TensorInferenceResponse(values.take(1_000_000), session.runtimeId.value)
+            } finally {
+                session?.let(inferenceServiceClient::closeSession)
+                descriptor.close()
+            }
+        }
+
+    private fun optimizedConfiguration(
+        device: dev.androml.core.model.DeviceProfile,
+        model: ModelRequirements,
+        runtimeId: RuntimeId,
+    ): RuntimeConfiguration {
+        val descriptor = RuntimePackCatalog.find(runtimeId)?.takeIf { it.usable }?.descriptor
+            ?: throw IllegalArgumentException("requested runtime is not bundled")
+        val settings = settingsProvider()
+        val effectiveDevice = if (settings.thermalGuard) {
+            device
+        } else {
+            device.copy(thermalStatus = ThermalStatus.Nominal)
+        }
+        val result = optimizer.select(
+            device = effectiveDevice,
+            model = model,
+            runtimes = listOf(descriptor),
+            policy = if (settings.autoOptimize) {
+                OptimizationPolicy()
+            } else {
+                OptimizationPolicy(
+                    preferredBackends = listOf(AccelerationBackend.Cpu),
+                    maxCpuThreads = effectiveDevice.cpuCoreCount.coerceIn(1, 8),
+                )
+            },
+        )
+        val configuration = result.configuration
+            ?: throw IllegalStateException("device cannot safely run the requested model")
+        return RuntimeConfiguration(
+            cpuThreads = configuration.cpuThreads,
+            contextTokens = configuration.contextTokens,
+            useAcceleration = configuration.useAcceleration,
+        )
     }
 }
 

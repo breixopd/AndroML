@@ -50,6 +50,10 @@ class ClusterPairingInviteIssuer(
         fingerprint: CertificateFingerprint,
         nowEpochMillis: Long,
     ): ClusterPairingInvite {
+        pending.entries.removeAll { (_, record) ->
+            record.used || nowEpochMillis >= record.expiresAtEpochMillis
+        }
+        check(pending.size < MAX_PENDING_INVITES) { "too many pending pairing invites" }
         require(certificate.isNotEmpty() && certificate.size <= 16 * 1024) { "pairing certificate is out of bounds" }
         require(CertificateFingerprint.parse(sha256(certificate)) == fingerprint) {
             "pairing certificate fingerprint does not match"
@@ -72,6 +76,7 @@ class ClusterPairingInviteIssuer(
     @Synchronized
     fun consume(pairingId: String, token: String, nowEpochMillis: Long): Boolean {
         val record = pending[pairingId] ?: return false
+        pending.remove(pairingId)
         if (record.used || nowEpochMillis >= record.expiresAtEpochMillis) {
             record.used = true
             return false
@@ -108,9 +113,15 @@ class ClusterPairingInviteIssuer(
         require(encoded.isNotBlank() && payload.startsWith("androml://pair?v=1&p=")) {
             "pairing QR scheme is invalid"
         }
-        val root = Json.parseToJsonElement(
-            Base64.getUrlDecoder().decode(encoded).toString(Charsets.UTF_8),
-        ).jsonObject
+        val raw = Base64.getUrlDecoder().decode(encoded).toString(Charsets.UTF_8)
+        validateClusterJson(raw)
+        val root = try {
+            Json.parseToJsonElement(raw).jsonObject
+        } catch (error: Exception) {
+            throw IllegalArgumentException("pairing QR payload is invalid", error)
+        } catch (error: StackOverflowError) {
+            throw IllegalArgumentException("pairing QR payload is too deeply nested", error)
+        }
         val certificate = root.required("certificate")
         val fingerprint = CertificateFingerprint.parse(root.required("fingerprint"))
         val certificateBytes = Base64.getUrlDecoder().decode(certificate)
@@ -138,6 +149,7 @@ class ClusterPairingInviteIssuer(
 
     private companion object {
         const val MAX_QR_PAYLOAD_CHARS = 32_000
+        const val MAX_PENDING_INVITES = 32
     }
 }
 
