@@ -2,6 +2,13 @@
 
 All notable changes to AndroML are documented here.
 
+## [1.0.4](https://github.com/breixopd/AndroML/compare/v1.0.3...v1.0.4) (2026-08-02)
+
+
+### Bug Fixes
+
+* **ux:** make model installation one tap ([eb2758b](https://github.com/breixopd/AndroML/commit/eb2758b7b8d00dd2886a45d4d806368db5efa015))
+
 ## [1.0.3](https://github.com/breixopd/AndroML/compare/v1.0.2...v1.0.3) (2026-08-02)
 
 
