@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -27,15 +29,18 @@ import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Api
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AssistChip
@@ -95,7 +100,9 @@ import dev.androml.core.model.ModelWorkload
 import dev.androml.core.model.ReleasePolicy
 import dev.androml.core.network.HuggingFaceEndpoints
 import dev.androml.core.network.HuggingFaceModelClient
+import dev.androml.core.network.HuggingFaceModelSort
 import dev.androml.core.model.HuggingFaceSearchHit
+import dev.androml.core.model.HuggingFaceRepositoryMetadata
 import dev.androml.core.security.SecretStore
 import dev.androml.runtime.api.InferenceEvent
 import dev.androml.runtime.api.InferenceRequest
@@ -112,6 +119,9 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -310,6 +320,7 @@ private fun AndroMLApp() {
                     workManager = workManager,
                     catalogRepository = catalogRepository,
                     secretStore = application.secretStore,
+                    deviceProfile = deviceProfile,
                 )
 
                 AppDestination.Library -> LibraryScreen(
@@ -938,6 +949,7 @@ private fun DiscoverScreen(
     workManager: WorkManager,
     catalogRepository: ModelCatalogRepository,
     secretStore: SecretStore,
+    deviceProfile: DeviceProfile,
 ) {
     var importState by remember { mutableStateOf(HuggingFaceImportState()) }
     var accessToken by remember { mutableStateOf("") }
@@ -953,11 +965,19 @@ private fun DiscoverScreen(
     var metadataJob by remember { mutableStateOf<Job?>(null) }
     var metadataRequestId by remember { mutableIntStateOf(0) }
     var activeWorkId by remember { mutableStateOf<UUID?>(null) }
-    var searchQuery by remember { mutableStateOf("") }
-    var searchResults by remember { mutableStateOf<List<HuggingFaceSearchHit>>(emptyList()) }
-    var searchMessage by remember { mutableStateOf<String?>(null) }
-    var searching by remember { mutableStateOf(false) }
+    var lastDownloadRequest by remember { mutableStateOf<HuggingFaceDownloadRequest?>(null) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var browseSortKey by rememberSaveable { mutableStateOf(HuggingFaceModelSort.Popular.name) }
+    var browseResults by remember { mutableStateOf<List<HuggingFaceSearchHit>>(emptyList()) }
+    var browseMessage by remember { mutableStateOf<String?>(null) }
+    var browseMessageIsError by remember { mutableStateOf(false) }
+    var browsing by remember { mutableStateOf(false) }
+    var browseJob by remember { mutableStateOf<Job?>(null) }
+    var showAdvancedImport by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val browseSort = HuggingFaceModelSort.entries.firstOrNull { it.name == browseSortKey }
+        ?: HuggingFaceModelSort.Popular
+
     LaunchedEffect(secretStore) {
         try {
             val savedToken = withContext(Dispatchers.IO) {
@@ -974,6 +994,111 @@ private fun DiscoverScreen(
             tokenStorageMessage = "The saved Hugging Face token could not be read; it was not sent."
         }
     }
+
+    fun cancelBrowse() {
+        browseJob?.cancel()
+        browseJob = null
+        browsing = false
+    }
+
+    fun loadRecommendations(sort: HuggingFaceModelSort = browseSort) {
+        cancelBrowse()
+        browseJob = scope.launch {
+            browsing = true
+            browseMessage = null
+            browseMessageIsError = false
+            try {
+                val queries = deviceRecommendationQueries(deviceProfile)
+                if (queries.isEmpty()) {
+                    browseResults = emptyList()
+                    browseMessage = "No bundled runtime matches this device's CPU architecture yet."
+                    return@launch
+                }
+                val responses = withContext(Dispatchers.IO) {
+                    coroutineScope {
+                        queries.map { query ->
+                            async {
+                                runCatching {
+                                    modelClient.searchModels(
+                                        query = query.search,
+                                        limit = query.limit,
+                                        sort = sort,
+                                        pipelineTag = query.pipelineTag,
+                                        filter = query.filter,
+                                        accessToken = accessToken.trim().takeIf(String::isNotEmpty),
+                                    )
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                }
+                val successful = responses.mapNotNull { it.getOrNull() }.flatten()
+                val failures = responses.count { it.isFailure }
+                browseResults = rankDeviceRecommendations(successful, deviceProfile)
+                browseMessage = when {
+                    browseResults.isEmpty() && failures == responses.size ->
+                        "Hugging Face could not load recommendations. Check your connection and try again."
+                    browseResults.isEmpty() ->
+                        "No compatible public models were found for this device yet. Try a specific model search."
+                    failures > 0 ->
+                        "Showing the recommendations that loaded. Some task categories were unavailable."
+                    else -> null
+                }
+                browseMessageIsError = browseResults.isEmpty() && failures == responses.size
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                browseResults = emptyList()
+                browseMessage = huggingFaceUserMessage(error)
+                browseMessageIsError = true
+            } finally {
+                browsing = false
+            }
+        }
+    }
+
+    fun searchHub(sort: HuggingFaceModelSort = browseSort) {
+        val query = searchQuery.trim()
+        if (query.isBlank()) {
+            loadRecommendations(sort)
+            return
+        }
+        cancelBrowse()
+        browseJob = scope.launch {
+            browsing = true
+            browseMessage = null
+            browseMessageIsError = false
+            try {
+                browseResults = withContext(Dispatchers.IO) {
+                    modelClient.searchModels(
+                        query = query,
+                        limit = 30,
+                        sort = sort,
+                        accessToken = accessToken.trim().takeIf(String::isNotEmpty),
+                    )
+                }
+                browseMessage = if (browseResults.isEmpty()) {
+                    "No public models matched \"$query\". Try a broader name or task."
+                } else {
+                    null
+                }
+                browseMessageIsError = false
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                browseResults = emptyList()
+                browseMessage = huggingFaceUserMessage(error)
+                browseMessageIsError = true
+            } finally {
+                browsing = false
+            }
+        }
+    }
+
+    LaunchedEffect(searchQuery.isBlank(), browseSort, deviceProfile.stableKey) {
+        if (searchQuery.isBlank()) loadRecommendations(browseSort)
+    }
+
     val endpoint = importState.reference?.let { reference ->
         HuggingFaceEndpoints().modelInfo(reference).toString()
     }
@@ -1050,8 +1175,8 @@ private fun DiscoverScreen(
         downloadState = HuggingFaceDownloadUiState.Idle
     }
 
-    fun inspectPinnedSource() {
-        val validatedState = importState.validate()
+    fun inspectPinnedSource(sourceState: HuggingFaceImportState = importState) {
+        val validatedState = sourceState.validate()
         importState = validatedState
         cancelActiveDownload()
         metadataState = HuggingFaceMetadataUiState.Idle
@@ -1079,6 +1204,25 @@ private fun DiscoverScreen(
                 }
             }
         }
+    }
+
+    fun selectSearchResult(result: HuggingFaceSearchHit) {
+        val revision = result.revision
+        if (revision == null) {
+            browseMessage = "This repository has no immutable commit and cannot be installed safely."
+            browseMessageIsError = true
+            return
+        }
+        val selectedState = HuggingFaceImportState(
+            modelId = result.modelId,
+            revision = revision,
+        )
+        showAdvancedImport = false
+        clearResolvedSource()
+        browseResults = emptyList()
+        browseMessage = null
+        browseMessageIsError = false
+        inspectPinnedSource(selectedState)
     }
 
     fun saveAccessToken() {
@@ -1128,6 +1272,7 @@ private fun DiscoverScreen(
             return
         }
         val request = HuggingFaceDownloadWork.createRequest(reference, descriptor)
+        lastDownloadRequest = HuggingFaceDownloadRequest(reference, descriptor)
         val uniqueWorkName = "hf-download-$sha256"
         try {
             workManager.enqueueUniqueWork(
@@ -1148,28 +1293,19 @@ private fun DiscoverScreen(
         }
     }
 
-    fun searchHub() {
-        if (searchQuery.isBlank()) {
-            searchMessage = "Enter a model name or task first"
-            return
-        }
-        searching = true
-        searchMessage = null
-        scope.launch {
-            try {
-                searchResults = withContext(Dispatchers.IO) {
-                    modelClient.searchModels(searchQuery.trim(), accessToken = accessToken.trim().takeIf(String::isNotEmpty))
-                }
-                searchMessage = if (searchResults.isEmpty()) "No public models matched this search" else null
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                searchResults = emptyList()
-                searchMessage = huggingFaceUserMessage(error)
-            } finally {
-                searching = false
+    val installableFiles: (HuggingFaceRepositoryMetadata) -> List<dev.androml.core.model.HuggingFaceFileDescriptor> = { metadata ->
+        metadata.files
+            .filter { it.sha256 != null }
+            .filter { descriptor ->
+                ModelFormatClassifier.forPath(descriptor.path)?.let { format ->
+                    val pack = RuntimePackCatalog.production.firstOrNull {
+                        it.descriptor.id.value == format.runtimeId
+                    }
+                    pack?.usable == true &&
+                        pack.descriptor.supportedAbis.intersect(deviceProfile.supportedAbis.toSet()).isNotEmpty()
+                } ?: false
             }
-        }
+            .sortedWith(compareBy({ it.sizeBytes }, { it.path }))
     }
 
     LazyColumn(
@@ -1180,26 +1316,66 @@ private fun DiscoverScreen(
         item {
             Text("Hugging Face direct import", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "Resolve a repository to an immutable commit, inspect its signed metadata, then download only files with a verified SHA-256.",
+                "Pick a model that fits this device. AndroML pins the repository, checks its files, and downloads only a verified model artifact.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Search the Hub", style = MaterialTheme.typography.titleMedium)
+                    Text("Find a model", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (searchQuery.isBlank()) {
+                            "Recommended models for ${deviceProfile.deviceName}"
+                        } else {
+                            "Search results for \"${searchQuery.trim()}\""
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (searchQuery.isBlank()) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Based on this phone's memory, CPU architecture, and bundled runtimes.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it.take(256) },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Model or task") },
-                        placeholder = { Text("llama, text-generation, whisper…") },
+                        label = { Text("Search by model name or task") },
+                        placeholder = { Text("Leave blank for recommendations") },
                         singleLine = true,
                     )
                     Spacer(Modifier.height(8.dp))
-                    Button(onClick = ::searchHub, enabled = !searching, modifier = Modifier.fillMaxWidth()) {
-                        if (searching) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        HuggingFaceModelSort.entries.forEach { sort ->
+                            FilterChip(
+                                selected = browseSort == sort,
+                                onClick = {
+                                    browseSortKey = sort.name
+                                    if (searchQuery.isNotBlank()) searchHub(sort)
+                                },
+                                label = { Text(sort.label) },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { searchHub(browseSort) },
+                        enabled = !browsing,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (browsing) {
                             CircularProgressIndicator(
                                 modifier = Modifier.width(20.dp).height(20.dp),
                                 strokeWidth = 2.dp,
@@ -1209,55 +1385,42 @@ private fun DiscoverScreen(
                             Icon(Icons.Outlined.Search, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                         }
-                        Text("Search Hugging Face")
+                        Text(if (searchQuery.isBlank()) "Refresh recommendations" else "Search Hugging Face")
                     }
-                    searchMessage?.let { message ->
+                    browseMessage?.let { message ->
                         Spacer(Modifier.height(6.dp))
-                        Text(message, style = MaterialTheme.typography.bodySmall)
-                    }
-                    searchResults.forEach { result ->
-                        Spacer(Modifier.height(8.dp))
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(result.modelId, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    buildString {
-                                        result.pipelineTag?.let { append(it) }
-                                        result.downloads?.let { if (isNotEmpty()) append(" · "); append("$it downloads") }
-                                        result.likes?.let { if (isNotEmpty()) append(" · "); append("$it likes") }
-                                    }.ifBlank { "Public model" },
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                TextButton(
-                                    onClick = {
-                                        val revision = result.revision
-                                        if (revision == null) {
-                                            searchMessage = "This result has no immutable commit; enter a SHA manually."
-                                        } else {
-                                            importState = HuggingFaceImportState(
-                                                modelId = result.modelId,
-                                                revision = revision,
-                                            )
-                                            clearResolvedSource()
-                                            searchMessage = "Pinned ${result.modelId} at ${revision.take(12)}…"
-                                        }
-                                    },
-                                ) {
-                                    Icon(Icons.Outlined.PushPin, contentDescription = null)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text("Use immutable revision")
-                                }
-                            }
-                        }
+                        Text(
+                            message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (browseMessageIsError) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
         }
-        item {
+        if (importState.reference == null && !showAdvancedImport) {
+            item {
+                TextButton(onClick = { showAdvancedImport = true }) {
+                    Icon(Icons.Outlined.PushPin, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Advanced: enter a repository and commit manually")
+                }
+            }
+        }
+        if (showAdvancedImport) {
+            item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Pinned source", style = MaterialTheme.typography.titleMedium)
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text("Selected source", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { showAdvancedImport = false }) { Text("Close") }
+                    }
+                    Text(
+                        "Selecting a result above fills this in and starts inspection automatically.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = importState.modelId,
@@ -1334,7 +1497,7 @@ private fun DiscoverScreen(
                     }
                     Spacer(Modifier.height(12.dp))
                     Button(
-                        onClick = ::inspectPinnedSource,
+                        onClick = { inspectPinnedSource() },
                         enabled = metadataState !is HuggingFaceMetadataUiState.Loading,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -1360,16 +1523,115 @@ private fun DiscoverScreen(
                     }
                 }
             }
+            }
+        }
+        if (importState.reference != null && !showAdvancedImport) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            Text("Pinned source", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { showAdvancedImport = true }) { Text("Edit") }
+                        }
+                        Text(importState.modelId, style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Commit ${importState.revision.take(12)}… · inspection started automatically",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
         }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Access and safety", style = MaterialTheme.typography.titleMedium)
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Outlined.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Safe downloads", style = MaterialTheme.typography.titleMedium)
+                    }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Gated model approval happens on Hugging Face. Metadata inspection may use an in-memory read token; background downloads use only the Keystore-backed token and never place credentials in a URL.",
+                        "Public models work without a token. For gated models, approve access on Hugging Face and optionally save a read token. AndroML keeps it in Android Keystore storage and never puts it in a URL.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
+                }
+            }
+        }
+        if (browsing && browseResults.isEmpty()) {
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.padding(16.dp)) {
+                        CircularProgressIndicator(modifier = Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Loading models that match the bundled engines…")
+                    }
+                }
+            }
+        }
+        if (browseResults.isNotEmpty()) {
+            item {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        if (searchQuery.isBlank()) "Recommended for this device" else "Search results",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "${browseResults.size} models",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            items(
+                items = browseResults,
+                key = { result -> "${result.modelId}@${result.revision.orEmpty()}" },
+            ) { result ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(result.modelId, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            buildString {
+                                result.pipelineTag?.let { append(it.replace('-', ' ')) }
+                                result.downloads?.let { if (isNotEmpty()) append(" · "); append("${formatCount(it)} downloads") }
+                                result.likes?.let { if (isNotEmpty()) append(" · "); append("${formatCount(it)} likes") }
+                            }.ifBlank { "Public model" }.replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        val formats = modelFormatLabels(result)
+                        if (formats.isNotEmpty()) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                formats.forEach { format ->
+                                    Surface(
+                                        shape = MaterialTheme.shapes.small,
+                                        color = MaterialTheme.colorScheme.secondaryContainer,
+                                    ) {
+                                        Text(
+                                            format,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { selectSearchResult(result) },
+                            enabled = result.revision != null && !browsing,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Outlined.Search, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Inspect and choose a model file")
+                        }
+                    }
                 }
             }
         }
@@ -1416,7 +1678,10 @@ private fun DiscoverScreen(
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Repository metadata", style = MaterialTheme.typography.titleMedium)
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                Text("Ready to install", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                                Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            }
                             Spacer(Modifier.height(6.dp))
                             Text(
                                 "${state.metadata.files.size} files · ${formatBytes(state.metadata.files.totalBytes())}",
@@ -1430,18 +1695,33 @@ private fun DiscoverScreen(
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
                             )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Choose one compatible model artifact below. AndroML verifies its size and SHA-256 before it appears in Library.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
-                items(state.metadata.files, key = { it.path }) { descriptor ->
+                val runnableFiles = installableFiles(state.metadata)
+                if (runnableFiles.isEmpty()) {
+                    item {
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                "This repository has no compatible, integrity-verifiable model file for this device. Try a result marked GGUF, ONNX, TFLite, or ExecuTorch.",
+                                modifier = Modifier.padding(16.dp),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+                items(runnableFiles, key = { it.path }) { descriptor ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(descriptor.path, style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(4.dp))
-                            Text(
-                                "${formatBytes(descriptor.sizeBytes)} · SHA-256 ${descriptor.sha256 ?: "not provided"}",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                            Text("${formatBytes(descriptor.sizeBytes)} · verified integrity available", style = MaterialTheme.typography.bodySmall)
                             Spacer(Modifier.height(8.dp))
                             Button(
                                 onClick = {
@@ -1454,9 +1734,19 @@ private fun DiscoverScreen(
                                     Icon(Icons.Outlined.Download, contentDescription = null)
                                     Spacer(Modifier.width(8.dp))
                                 }
-                                Text(if (descriptor.sha256 == null) "Integrity data required" else "Download file")
+                                Text("Install this model")
                             }
                         }
+                    }
+                }
+                val hiddenFileCount = state.metadata.files.size - runnableFiles.size
+                if (hiddenFileCount > 0) {
+                    item {
+                        Text(
+                            "$hiddenFileCount repository files hidden because they are support files or not runnable on this device.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -1467,7 +1757,10 @@ private fun DiscoverScreen(
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Downloading ${state.path}", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (state.bytesWritten == 0L) "Download queued" else "Downloading ${state.path}",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
                             Spacer(Modifier.height(8.dp))
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                             if (state.totalBytes > 0L) {
@@ -1479,7 +1772,7 @@ private fun DiscoverScreen(
                             }
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "The partial file and WorkManager job survive navigation and can resume after a connection stop.",
+                                "The verified transfer continues in the background and can resume after a connection stop.",
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             TextButton(onClick = ::cancelActiveDownload) {
@@ -1518,6 +1811,14 @@ private fun DiscoverScreen(
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodyMedium,
                             )
+                            lastDownloadRequest?.let { request ->
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = { downloadFile(request.reference, request.descriptor) }) {
+                                    Icon(Icons.Outlined.Refresh, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Try again")
+                                }
+                            }
                         }
                     }
                 }
@@ -1640,6 +1941,13 @@ private fun formatBytes(bytes: Long): String {
         unitIndex += 1
     }
     return String.format(Locale.ROOT, "%.1f %s", value, units[unitIndex])
+}
+
+private fun formatCount(count: Long): String = when {
+    count >= 1_000_000_000L -> "%.1fB".format(Locale.ROOT, count / 1_000_000_000.0)
+    count >= 1_000_000L -> "%.1fM".format(Locale.ROOT, count / 1_000_000.0)
+    count >= 1_000L -> "%.1fK".format(Locale.ROOT, count / 1_000.0)
+    else -> count.toString()
 }
 
 @Composable

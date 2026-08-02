@@ -44,10 +44,21 @@ class HuggingFaceModelClient(
     fun searchModels(
         query: String,
         limit: Int = 20,
+        sort: HuggingFaceModelSort = HuggingFaceModelSort.Popular,
+        pipelineTag: String? = null,
+        filter: String? = null,
         accessToken: String? = null,
     ): List<HuggingFaceSearchHit> {
         val request = Request.Builder()
-            .url(endpoints.searchModels(query, limit).toString())
+            .url(
+                endpoints.searchModels(
+                    query = query,
+                    limit = limit,
+                    sort = sort,
+                    pipelineTag = pipelineTag,
+                    filter = filter,
+                ).toString(),
+            )
             .header("Accept", "application/json")
             .apply {
                 accessToken?.takeIf { it.isNotBlank() }?.let { token ->

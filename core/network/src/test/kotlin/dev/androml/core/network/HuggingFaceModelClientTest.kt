@@ -39,7 +39,7 @@ class HuggingFaceModelClientTest {
         assertEquals(1, server.requestCount)
         assertEquals("GET", request?.method)
         assertEquals(
-            "/api/models/org/tiny-model?revision=${reference.revision.value}",
+            "/api/models/org/tiny-model?revision=${reference.revision.value}&blobs=true",
             request?.target,
         )
         assertEquals("application/json", request?.headers?.get("Accept"))
@@ -72,7 +72,10 @@ class HuggingFaceModelClientTest {
         ).searchModels("tiny model", accessToken = "hf_search_token")
         val request = server.takeRequest(1, TimeUnit.SECONDS)
 
-        assertEquals("/api/models?search=tiny%20model&limit=20&full=false", request?.target)
+        assertEquals(
+            "/api/models?search=tiny%20model&sort=downloads&direction=-1&limit=20&full=true",
+            request?.target,
+        )
         assertEquals("Bearer hf_search_token", request?.headers?.get("Authorization"))
         assertEquals("org/tiny-model", hits.single().modelId)
     }
