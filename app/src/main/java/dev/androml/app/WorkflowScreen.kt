@@ -99,7 +99,7 @@ fun WorkflowScreen(
     fun saveModelTemplate() {
         val hash = selectedModelHash
         if (hash == null) {
-            message = "Download and verify a .litertlm model before creating a model workflow"
+            message = "Install a LiteRT-LM model before creating a model workflow"
             messageTone = NoticeTone.Error
             return
         }
@@ -231,7 +231,7 @@ fun WorkflowScreen(
                     Spacer(Modifier.height(8.dp))
                     if (runnableModels.isEmpty()) {
                         Text(
-                            "No verified LiteRT-LM model is installed yet. You can still create a RAG or agent workflow below.",
+                            "No LiteRT-LM model is installed yet. You can still create a RAG or agent workflow below.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -299,7 +299,7 @@ fun WorkflowScreen(
                 EmptyStateCard(
                     icon = Icons.Outlined.Inventory2,
                     title = "No workflow model is ready",
-                    description = "Download and verify a LiteRT-LM model before creating a model workflow.",
+                    description = "Install a LiteRT-LM model before creating a model workflow.",
                     actionLabel = "Browse compatible models",
                     onAction = onBrowseModels,
                 )

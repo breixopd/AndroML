@@ -61,11 +61,11 @@ class RuntimeRagEmbeddingProvider(
 
     private suspend fun embedWithRuntime(text: String): FloatArray = withContext(Dispatchers.IO) {
         val artifactHash = catalogRepository.firstVerifiedArtifactFor(ModelWorkload.TextEmbedding)
-            ?: error("no verified text-embedding artifact is installed")
+            ?: error("no text-embedding model is installed")
         val modelFile = catalogRepository.fileForArtifact(artifactHash.value)
-            ?: error("verified embedding metadata is missing")
+            ?: error("the installed embedding model metadata is missing")
         val runtimeName = ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
-            ?: error("verified embedding format is unsupported")
+            ?: error("the installed embedding model format is unsupported")
         val runtimeId = RuntimeId.parse(runtimeName)
         check(RuntimePackCatalog.find(runtimeId)?.usable == true) { "embedding runtime is not bundled" }
         check(artifactStore.contains(artifactHash.value)) { "embedding artifact is missing" }

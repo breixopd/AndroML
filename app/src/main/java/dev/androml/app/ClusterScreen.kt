@@ -346,7 +346,7 @@ fun ClusterScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Cluster listener", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Enable the local mTLS endpoint after pairing at least one phone. Verified whole-request inference replicas, distributed RAG fan-out, and workflow-stage placement use the same trusted peer ledger.",
+                        "Enable the local mTLS endpoint after pairing at least one phone. Secure whole-request inference replicas, distributed RAG fan-out, and workflow-stage placement use the same trusted peer ledger.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -634,7 +634,7 @@ fun ClusterScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Transfer an installed model", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Copy a verified artifact to a paired phone over the pinned mTLS channel. Transfers are resumable and require an explicit owner approval each time.",
+                        "Copy an installed model to a paired phone over the pinned mTLS channel. Transfers are resumable and require an explicit owner approval each time.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -652,7 +652,7 @@ fun ClusterScreen(
                         onValueChange = { transferArtifactHash = it.take(64) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Installed artifact SHA-256") },
-                        supportingText = { Text("Only verified local artifacts can be transferred") },
+                        supportingText = { Text("Only installed model files can be transferred") },
                         singleLine = true,
                         enabled = !busy,
                     )

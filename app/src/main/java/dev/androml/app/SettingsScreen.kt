@@ -108,7 +108,7 @@ fun SettingsScreen(
                     )
                     SettingToggle(
                         title = "Background downloads",
-                        detail = "Keep verified Hugging Face downloads resumable after navigation or reconnects.",
+                        detail = "Keep Hugging Face downloads running after navigation and resume them after reconnects.",
                         checked = settings.allowBackgroundDownloads,
                         onCheckedChange = { update(settings.copy(allowBackgroundDownloads = it)) },
                     )

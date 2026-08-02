@@ -93,7 +93,7 @@ fun huggingFaceWorkerUserMessage(errorCode: String?): String = when (errorCode) 
 
     "NotFound" -> "That pinned model or revision was not found on Hugging Face."
     "ResponseTooLarge" -> "The file response exceeded AndroML's safety limit."
-    "InvalidMetadata" -> "The file response failed integrity or range validation."
+    "InvalidMetadata" -> "The downloaded file could not be confirmed. Try again or choose another model."
     "unexpected" -> "The background download failed without exposing internal error details."
     else -> "The background download failed. Check the connection and try again."
 }

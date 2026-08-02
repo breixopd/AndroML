@@ -1,6 +1,9 @@
 package dev.androml.app
 
 import dev.androml.core.model.DeviceProfile
+import dev.androml.core.model.HuggingFaceFileDescriptor
+import dev.androml.core.model.HuggingFaceModelReference
+import dev.androml.core.model.HuggingFaceRepositoryMetadata
 import dev.androml.core.model.HuggingFaceSearchHit
 import dev.androml.core.model.ThermalStatus
 import dev.androml.core.model.ModelWorkload
@@ -51,6 +54,33 @@ class HuggingFaceRecommendationsTest {
         val ranked = rankDeviceRecommendations(listOf(large, small, small), device)
 
         assertEquals(listOf(small.modelId), ranked.map { it.modelId })
+    }
+
+    @Test
+    fun automaticInstallChoosesSmallestRunnableArtifactAndHidesSupportFiles() {
+        val metadata = HuggingFaceRepositoryMetadata(
+            reference = HuggingFaceModelReference.parse(
+                modelId = "demo/embedding-model",
+                revision = "0123456789abcdef0123456789abcdef01234567",
+            ),
+            files = listOf(
+                HuggingFaceFileDescriptor("README.md", 20L),
+                HuggingFaceFileDescriptor("large.onnx", 400L, "a".repeat(64)),
+                HuggingFaceFileDescriptor("small.onnx", 200L, "b".repeat(64)),
+                HuggingFaceFileDescriptor("missing-hash.onnx", 100L),
+                HuggingFaceFileDescriptor("arm-only.gguf", 50L, "c".repeat(64)),
+            ),
+            isPrivate = false,
+            isGated = false,
+            license = "apache-2.0",
+        )
+
+        val artifacts = compatibleInstallArtifacts(
+            metadata = metadata,
+            device = device(memoryGiB = 8, abis = listOf("x86_64")),
+        )
+
+        assertEquals(listOf("small.onnx", "large.onnx"), artifacts.map { it.path })
     }
 
     private fun device(memoryGiB: Int, abis: List<String>): DeviceProfile = DeviceProfile(
