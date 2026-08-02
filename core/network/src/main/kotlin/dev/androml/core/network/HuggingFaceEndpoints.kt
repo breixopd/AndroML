@@ -43,15 +43,34 @@ class HuggingFaceEndpoints private constructor(
     fun modelInfo(reference: HuggingFaceModelReference): URI =
         URI.create(
             "$origin/api/models/${encodePath(reference.modelId.value)}" +
-                "?revision=${reference.revision.value}",
+                "?revision=${reference.revision.value}&blobs=true",
         )
 
-    fun searchModels(query: String, limit: Int = 20): URI {
-        require(query.isNotBlank() && query.length <= 256) { "search query is invalid" }
+    fun searchModels(
+        query: String = "",
+        limit: Int = 20,
+        sort: HuggingFaceModelSort = HuggingFaceModelSort.Popular,
+        pipelineTag: String? = null,
+        filter: String? = null,
+    ): URI {
+        require(query.length <= 256) { "search query is invalid" }
         require(limit in 1..50) { "search limit is out of bounds" }
-        return URI.create(
-            "$origin/api/models?search=${encodeQuery(query)}&limit=$limit&full=false",
-        )
+        require(pipelineTag == null || pipelineTag.matches(TAG_PATTERN)) {
+            "pipeline tag is invalid"
+        }
+        require(filter == null || filter.matches(TAG_PATTERN)) { "model filter is invalid" }
+        val parameters = buildList {
+            if (query.isNotBlank()) add("search=${encodeQuery(query)}")
+            pipelineTag?.let { add("pipeline_tag=${encodeQuery(it)}") }
+            filter?.let { add("filter=${encodeQuery(it)}") }
+            add("sort=${encodeQuery(sort.queryValue)}")
+            add("direction=${sort.direction}")
+            add("limit=$limit")
+            // Full records carry immutable SHAs and sibling paths, which lets the app
+            // recommend only repositories that contain a bundled model format.
+            add("full=true")
+        }
+        return URI.create("$origin/api/models?${parameters.joinToString("&")}")
     }
 
     fun fileDownload(
@@ -94,6 +113,7 @@ class HuggingFaceEndpoints private constructor(
     companion object {
         private const val DEFAULT_BASE_URL = "https://huggingface.co"
         private const val OFFICIAL_HOST = "huggingface.co"
+        private val TAG_PATTERN = Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
         private const val HEX = "0123456789ABCDEF"
         private val LOCAL_TEST_HOSTS = setOf("localhost", "127.0.0.1")
         private val SAFE_ASCII = buildSet {

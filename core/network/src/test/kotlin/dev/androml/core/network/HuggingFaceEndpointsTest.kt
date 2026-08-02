@@ -20,7 +20,10 @@ class HuggingFaceEndpointsTest {
         assertEquals("https", uri.scheme)
         assertEquals("huggingface.co", uri.host)
         assertEquals("/api/models/org/tiny-model", uri.rawPath)
-        assertEquals("revision=0123456789abcdef0123456789abcdef01234567", uri.rawQuery)
+        assertEquals(
+            "revision=0123456789abcdef0123456789abcdef01234567&blobs=true",
+            uri.rawQuery,
+        )
         assertEquals(null, uri.userInfo)
     }
 
@@ -38,6 +41,22 @@ class HuggingFaceEndpointsTest {
             uri.rawPath,
         )
         assertEquals("huggingface.co", uri.host)
+    }
+
+    @Test
+    fun searchAllowsBlankRecommendationsAndEncodesSortAndFilters() {
+        val uri = HuggingFaceEndpoints().searchModels(
+            query = "",
+            limit = 10,
+            sort = HuggingFaceModelSort.MostLiked,
+            pipelineTag = "text-generation",
+            filter = "gguf",
+        )
+
+        assertEquals(
+            "pipeline_tag=text-generation&filter=gguf&sort=likes&direction=-1&limit=10&full=true",
+            uri.rawQuery,
+        )
     }
 
     @Test
