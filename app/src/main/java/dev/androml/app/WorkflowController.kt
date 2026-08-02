@@ -201,7 +201,7 @@ class WorkflowController(
             descriptor = ToolDescriptor(
                 id = MODEL_INVOKE_TOOL,
                 displayName = "Model invocation",
-                description = "Runs one verified local or paired model request with bounded output.",
+                description = "Runs one installed local or paired model request with bounded output.",
                 sideEffect = ToolSideEffect.Read,
                 requiredScopes = setOf(MODEL_INVOKE_SCOPE),
                 input = ToolInputSchema(
@@ -220,7 +220,7 @@ class WorkflowController(
                 val prompt = invocation.arguments.getValue("prompt").toString().trim('"')
                 val maxNewTokens = invocation.arguments["max_new_tokens"]?.toString()?.toIntOrNull()?.coerceIn(1, 8192) ?: 256
                 val modelFile = catalogRepository.fileForArtifact(modelHash)
-                    ?: throw IllegalArgumentException("verified model artifact is not installed")
+                    ?: throw IllegalArgumentException("the requested model is not installed")
                 val runtimeId = ModelFormatClassifier.forPath(modelFile.path)?.runtimeId
                     ?: throw IllegalArgumentException("model format is unsupported")
                 val execution = clusterController.executeBestInference(

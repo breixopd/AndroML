@@ -1,7 +1,10 @@
 package dev.androml.app
 
 import dev.androml.core.model.DeviceProfile
+import dev.androml.core.model.HuggingFaceFileDescriptor
+import dev.androml.core.model.HuggingFaceRepositoryMetadata
 import dev.androml.core.model.HuggingFaceSearchHit
+import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.model.ModelWorkload
 import dev.androml.runtime.api.RuntimePackCatalog
 
@@ -98,6 +101,25 @@ fun modelFormatLabels(hit: HuggingFaceSearchHit): List<String> = buildList {
     if (hit.filePaths.any { it.endsWith(".tflite", ignoreCase = true) }) add("TFLite")
     if (hit.filePaths.any { it.endsWith(".pte", ignoreCase = true) }) add("ExecuTorch")
 }
+
+/** Picks only runnable files for this APK and device, smallest first for a low-friction default. */
+fun compatibleInstallArtifacts(
+    metadata: HuggingFaceRepositoryMetadata,
+    device: DeviceProfile,
+): List<HuggingFaceFileDescriptor> = metadata.files
+    .asSequence()
+    .filter { it.sha256 != null }
+    .filter { descriptor ->
+        ModelFormatClassifier.forPath(descriptor.path)?.let { format ->
+            val pack = RuntimePackCatalog.production.firstOrNull {
+                it.descriptor.id.value == format.runtimeId
+            }
+            pack?.usable == true &&
+                pack.descriptor.supportedAbis.intersect(device.supportedAbis.toSet()).isNotEmpty()
+        } ?: false
+    }
+    .sortedWith(compareBy({ it.sizeBytes }, { it.path }))
+    .toList()
 
 private fun recommendedTextSearch(device: DeviceProfile): String {
     val availableBytes = device.availableMemoryBytes

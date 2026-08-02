@@ -35,7 +35,6 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Hub
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Menu
@@ -147,7 +146,7 @@ private enum class AppDestination(
     Home("Home", "Device and model status", Icons.Outlined.Home),
     Playground("Playground", "Run local inference", Icons.Outlined.PlayArrow),
     Discover("Discover", "Find and download models", Icons.Outlined.Explore),
-    Library("Library", "Installed model revisions", Icons.Outlined.Inventory2),
+    Library("Library", "Your downloaded models", Icons.Outlined.Inventory2),
     Rag("RAG", "Local knowledge collections", Icons.AutoMirrored.Outlined.MenuBook),
     Workflows("Workflows", "Tools and agent automation", Icons.Outlined.AccountTree),
     Api("API", "Secure local API server", Icons.Outlined.Api),
@@ -548,7 +547,7 @@ private fun PlaygroundScreen(
             try {
                 if (distributed && selectedWorkload == ModelWorkload.TextGeneration) {
                     val artifactHash = selectedFile?.artifactSha256
-                        ?: error("a verified model artifact is required for distributed inference")
+                        ?: error("an installed model is required for distributed inference")
                     val runtimeId = selectedRuntimeId ?: error("the model format has no runtime")
                     val execution = withContext(Dispatchers.IO) {
                         clusterController.executeBestInference(
@@ -641,7 +640,7 @@ private fun PlaygroundScreen(
     ) {
         item {
             Text(
-                "Run a verified model through a bundled isolated runtime. AndroML never substitutes a fake result for a real model.",
+                "Run an installed model through a bundled isolated runtime. AndroML never substitutes a fake result for a real model.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -704,7 +703,7 @@ private fun PlaygroundScreen(
                     Spacer(Modifier.height(6.dp))
                     if (runnableFiles.isEmpty()) {
                         Text(
-                            "No verified artifact is installed for this workload yet.",
+                            "No model is installed for this workload yet.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -732,7 +731,7 @@ private fun PlaygroundScreen(
                 EmptyStateCard(
                     icon = Icons.Outlined.Inventory2,
                     title = "Nothing ready for ${readableWorkloadName(selectedWorkload)}",
-                    description = "Discover a compatible model, verify its files, and it will appear here automatically.",
+                    description = "Choose a compatible model in Discover and it will appear here automatically.",
                     actionLabel = "Browse compatible models",
                     onAction = onBrowseModels,
                 )
@@ -747,7 +746,7 @@ private fun PlaygroundScreen(
                     if (distributed && selectedWorkload == ModelWorkload.TextGeneration) {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Distributed mode sends the complete verified request to a paired, freshly-capable node over mTLS; the model must already be installed there.",
+                            "Distributed mode sends the complete request to a paired, freshly-capable node over mTLS; the model must already be installed there.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -886,7 +885,7 @@ private fun HomeScreen(
                 )
                 Text(
                     if (modelCount == 0) {
-                        "Choose a model from Hugging Face. AndroML will verify the download and select a compatible included engine."
+                        "Choose a model from Hugging Face. AndroML installs the best compatible version and picks the right included engine."
                     } else {
                         "Models, runtimes, APIs, automations, and cluster peers stay under your control."
                     },
@@ -940,8 +939,12 @@ private fun HomeScreen(
         item {
             StatusCard(
                 title = "Models",
-                value = if (modelCount == 0) "No models installed" else "$modelCount revisions in library",
-                detail = "Use Discover to pin a Hugging Face commit, inspect its files, and create verified downloads.",
+                value = if (modelCount == 0) {
+                    "No models installed"
+                } else {
+                    "$modelCount ${if (modelCount == 1) "model" else "models"} installed"
+                },
+                detail = "Use Discover to install a compatible Hugging Face model in one tap.",
             )
         }
         item {
@@ -965,12 +968,12 @@ private fun HomeScreen(
         val steps = if (modelCount == 0) {
             listOf(
                 "1  Browse a recommended model for this device",
-                "2  Inspect the pinned revision and install one compatible file",
-                "3  Run the verified artifact in Playground",
+                "2  Tap Install—AndroML handles the rest",
+                "3  Start using it in Playground",
             )
         } else {
             listOf(
-                "Run a verified artifact in Playground",
+                "Use an installed model in Playground",
                 "Add a local collection in RAG when you need citations",
                 "Enable API or pair a phone only when you need remote access",
             )
@@ -1029,6 +1032,9 @@ private fun DiscoverScreen(
     var directDownloadJob by remember { mutableStateOf<Job?>(null) }
     var directDownloadId by remember { mutableStateOf<UUID?>(null) }
     var showAdvancedImport by rememberSaveable { mutableStateOf(false) }
+    var guidedInstall by remember { mutableStateOf(false) }
+    var autoInstallPending by remember { mutableStateOf(false) }
+    var showModelDetails by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val browseSort = HuggingFaceModelSort.entries.firstOrNull { it.name == browseSortKey }
         ?: HuggingFaceModelSort.Popular
@@ -1242,6 +1248,9 @@ private fun DiscoverScreen(
         cancelActiveDownload()
         metadataState = HuggingFaceMetadataUiState.Idle
         downloadState = HuggingFaceDownloadUiState.Idle
+        guidedInstall = false
+        autoInstallPending = false
+        showModelDetails = false
     }
 
     fun inspectPinnedSource(sourceState: HuggingFaceImportState = importState) {
@@ -1288,6 +1297,8 @@ private fun DiscoverScreen(
         )
         showAdvancedImport = false
         clearResolvedSource()
+        guidedInstall = true
+        autoInstallPending = true
         browseResults = emptyList()
         browseMessage = null
         browseMessageIsError = false
@@ -1421,18 +1432,18 @@ private fun DiscoverScreen(
     }
 
     val installableFiles: (HuggingFaceRepositoryMetadata) -> List<dev.androml.core.model.HuggingFaceFileDescriptor> = { metadata ->
-        metadata.files
-            .filter { it.sha256 != null }
-            .filter { descriptor ->
-                ModelFormatClassifier.forPath(descriptor.path)?.let { format ->
-                    val pack = RuntimePackCatalog.production.firstOrNull {
-                        it.descriptor.id.value == format.runtimeId
-                    }
-                    pack?.usable == true &&
-                        pack.descriptor.supportedAbis.intersect(deviceProfile.supportedAbis.toSet()).isNotEmpty()
-                } ?: false
-            }
-            .sortedWith(compareBy({ it.sizeBytes }, { it.path }))
+        compatibleInstallArtifacts(metadata, deviceProfile)
+    }
+
+    LaunchedEffect(metadataState, autoInstallPending) {
+        if (!autoInstallPending) return@LaunchedEffect
+        val metadata = (metadataState as? HuggingFaceMetadataUiState.Loaded)?.metadata
+            ?: return@LaunchedEffect
+        val descriptor = installableFiles(metadata).firstOrNull()
+        autoInstallPending = false
+        if (descriptor != null) {
+            downloadFile(metadata.reference, descriptor)
+        }
     }
 
     LazyColumn(
@@ -1441,9 +1452,9 @@ private fun DiscoverScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text("Hugging Face direct import", style = MaterialTheme.typography.headlineSmall)
+            Text("Models for this phone", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "Pick a model that fits this device. AndroML pins the repository, checks its files, and downloads only a verified model artifact.",
+                "Choose a model and AndroML handles compatibility, the safest version, and the right included engine automatically.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -1552,7 +1563,7 @@ private fun DiscoverScreen(
                         TextButton(onClick = { showAdvancedImport = false }) { Text("Close") }
                     }
                     Text(
-                        "Selecting a result above fills this in and starts inspection automatically.",
+                        "Selecting a result above fills this in and starts installation automatically.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1646,7 +1657,7 @@ private fun DiscoverScreen(
                             Icon(Icons.Outlined.Search, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                         }
-                        Text("Inspect pinned metadata")
+                        Text("Continue")
                     }
                     importState.errorMessage?.let { errorMessage ->
                         Spacer(Modifier.height(8.dp))
@@ -1660,37 +1671,78 @@ private fun DiscoverScreen(
             }
             }
         }
-        if (importState.reference != null && !showAdvancedImport) {
+        if (importState.reference != null &&
+            !showAdvancedImport &&
+            downloadState !is HuggingFaceDownloadUiState.Complete
+        ) {
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            Text("Pinned source", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { showAdvancedImport = true }) { Text("Edit") }
-                        }
-                        Text(importState.modelId, style = MaterialTheme.typography.bodyLarge)
+                        Text(importState.modelId, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(4.dp))
                         Text(
-                            "Commit ${importState.revision.take(12)}… · inspection started automatically",
-                            style = MaterialTheme.typography.bodySmall,
+                            when (downloadState) {
+                                is HuggingFaceDownloadUiState.Running -> "Downloading and getting it ready…"
+                                is HuggingFaceDownloadUiState.Complete -> "Ready to use"
+                                is HuggingFaceDownloadUiState.Failed -> "Needs attention"
+                                else -> when (metadataState) {
+                                    HuggingFaceMetadataUiState.Loading -> "Choosing the best version for this phone…"
+                                    is HuggingFaceMetadataUiState.Failed -> "Needs attention"
+                                    is HuggingFaceMetadataUiState.Loaded -> "Preparing download…"
+                                    HuggingFaceMetadataUiState.Idle -> "Preparing model…"
+                                }
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (metadataState is HuggingFaceMetadataUiState.Loading &&
+                            downloadState !is HuggingFaceDownloadUiState.Running
+                        ) {
+                            Spacer(Modifier.height(10.dp))
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { showModelDetails = !showModelDetails }) {
+                                Text(if (showModelDetails) "Hide details" else "Details")
+                            }
+                            TextButton(
+                                onClick = {
+                                    clearResolvedSource()
+                                    importState = HuggingFaceImportState()
+                                    searchHub(browseSort)
+                                },
+                            ) {
+                                Text("Choose another")
+                            }
+                        }
+                        if (showModelDetails) {
+                            SelectionContainer {
+                                Column {
+                                    Text(
+                                        "Source commit ${importState.revision}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    val descriptor = (metadataState as? HuggingFaceMetadataUiState.Loaded)
+                                        ?.metadata
+                                        ?.let(installableFiles)
+                                        ?.firstOrNull()
+                                    descriptor?.let {
+                                        Text(
+                                            "Selected file ${it.path} · ${formatBytes(it.sizeBytes)}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                    (downloadState as? HuggingFaceDownloadUiState.Complete)?.let {
+                                        Text("SHA-256 ${it.sha256}", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Text(
+                                        "Compatibility and integrity checks are automatic.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
                     }
-                }
-            }
-        }
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Outlined.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Safe downloads", style = MaterialTheme.typography.titleMedium)
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Public models work without a token. For gated models, approve access on Hugging Face and optionally save a read token. AndroML keeps it in Android Keystore storage and never puts it in a URL.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
                 }
             }
         }
@@ -1762,15 +1814,15 @@ private fun DiscoverScreen(
                             enabled = result.revision != null && !browsing,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Icon(Icons.Outlined.Search, contentDescription = null)
+                            Icon(Icons.Outlined.Download, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
-                            Text("Inspect and choose a model file")
+                            Text("Install")
                         }
                     }
                 }
             }
         }
-        endpoint?.let { pinnedEndpoint ->
+        if (showAdvancedImport) endpoint?.let { pinnedEndpoint ->
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -1781,7 +1833,7 @@ private fun DiscoverScreen(
                         }
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "The commit SHA is fixed for this inspection and all later download requests.",
+                            "This exact source version is used for the automatic download.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -1791,9 +1843,9 @@ private fun DiscoverScreen(
         when (val state = metadataState) {
             HuggingFaceMetadataUiState.Idle -> Unit
             HuggingFaceMetadataUiState.Loading -> {
-                item {
+                if (!guidedInstall) item {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    Text("Fetching pinned repository metadata…", style = MaterialTheme.typography.bodySmall)
+                    Text("Checking repository files…", style = MaterialTheme.typography.bodySmall)
                 }
             }
 
@@ -1809,7 +1861,12 @@ private fun DiscoverScreen(
                             ) {
                                 Icon(Icons.Outlined.Refresh, contentDescription = null)
                                 Spacer(Modifier.width(8.dp))
-                                Text("Retry inspection")
+                                Text("Try again")
+                            }
+                            if (guidedInstall) {
+                                TextButton(onClick = { showAdvancedImport = true }) {
+                                    Text("Use a Hugging Face token")
+                                }
                             }
                         }
                     }
@@ -1819,7 +1876,7 @@ private fun DiscoverScreen(
             is HuggingFaceMetadataUiState.Loaded -> {
                 val runnableFiles = installableFiles(state.metadata)
                 val recommendedFile = runnableFiles.firstOrNull()
-                item {
+                if (!guidedInstall) item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Row(modifier = Modifier.fillMaxWidth()) {
@@ -1841,7 +1898,7 @@ private fun DiscoverScreen(
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "Choose one compatible model artifact below. AndroML verifies its size and SHA-256 before it appears in Library.",
+                                "Choose a compatible model file below. Safety checks still run automatically before it appears in Library.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1858,7 +1915,7 @@ private fun DiscoverScreen(
                                 ) {
                                     Icon(Icons.Outlined.Download, contentDescription = null)
                                     Spacer(Modifier.width(8.dp))
-                                    Text("Install smallest compatible file")
+                                    Text("Install recommended file")
                                 }
                                 Text(
                                     "${descriptor.path} · ${formatBytes(descriptor.sizeBytes)}",
@@ -1873,19 +1930,19 @@ private fun DiscoverScreen(
                     item {
                         Card(modifier = Modifier.fillMaxWidth()) {
                             Text(
-                                "This repository has no compatible, integrity-verifiable model file for this device. Try a result marked GGUF, ONNX, TFLite, or ExecuTorch.",
+                                "This repository has no compatible model file for this device. Try a result marked GGUF, ONNX, TFLite, or ExecuTorch.",
                                 modifier = Modifier.padding(16.dp),
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
                     }
                 }
-                items(runnableFiles, key = { it.path }) { descriptor ->
+                if (!guidedInstall) items(runnableFiles, key = { it.path }) { descriptor ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(descriptor.path, style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(4.dp))
-                            Text("${formatBytes(descriptor.sizeBytes)} · verified integrity available", style = MaterialTheme.typography.bodySmall)
+                            Text(formatBytes(descriptor.sizeBytes), style = MaterialTheme.typography.bodySmall)
                             Spacer(Modifier.height(8.dp))
                             Button(
                                 onClick = {
@@ -1904,7 +1961,7 @@ private fun DiscoverScreen(
                     }
                 }
                 val hiddenFileCount = state.metadata.files.size - runnableFiles.size
-                if (hiddenFileCount > 0) {
+                if (hiddenFileCount > 0 && !guidedInstall) {
                     item {
                         Text(
                             "$hiddenFileCount repository files hidden because they are support files or not runnable on this device.",
@@ -1922,7 +1979,7 @@ private fun DiscoverScreen(
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(
-                                if (state.bytesWritten == 0L) "Download queued" else "Downloading ${state.path}",
+                                if (state.bytesWritten == 0L) "Starting download…" else "Downloading model",
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Spacer(Modifier.height(8.dp))
@@ -1937,9 +1994,9 @@ private fun DiscoverScreen(
                             Spacer(Modifier.height(6.dp))
                             Text(
                                 if (allowBackgroundDownloads) {
-                                    "The verified transfer continues in the background and can resume after a connection stop."
+                                    "The download continues in the background and can resume after a connection stop."
                                 } else {
-                                    "Background downloads are off. Keep Discover open until this verified transfer finishes."
+                                    "Background downloads are off. Keep Discover open until this download finishes."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                             )
@@ -1955,29 +2012,32 @@ private fun DiscoverScreen(
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Verified download complete", style = MaterialTheme.typography.titleMedium)
+                            Text("Ready to use", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                "${state.path} · ${formatBytes(state.sizeBytes)}",
+                                importState.modelId.ifBlank { state.path },
                                 style = MaterialTheme.typography.bodyMedium,
                             )
-                            SelectionContainer {
-                                Text("SHA-256 ${state.sha256}", style = MaterialTheme.typography.bodySmall)
+                            if (showModelDetails) {
+                                SelectionContainer {
+                                    Text(
+                                        "${state.path} · ${formatBytes(state.sizeBytes)} · SHA-256 ${state.sha256}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
                             }
                             Spacer(Modifier.height(10.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Button(onClick = onOpenLibrary, modifier = Modifier.weight(1f)) {
-                                    Icon(Icons.Outlined.Inventory2, contentDescription = null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Open library")
-                                }
-                                TextButton(onClick = onOpenPlayground, modifier = Modifier.weight(1f)) {
-                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null)
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Open playground")
-                                }
+                            TextButton(onClick = { showModelDetails = !showModelDetails }) {
+                                Text(if (showModelDetails) "Hide details" else "Details")
+                            }
+                            Button(onClick = onOpenPlayground, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Start using model")
+                            }
+                            TextButton(onClick = onOpenLibrary, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Outlined.Inventory2, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("View library")
                             }
                         }
                     }
@@ -1988,7 +2048,7 @@ private fun DiscoverScreen(
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Download failed: ${state.path}", style = MaterialTheme.typography.titleMedium)
+                            Text("Couldn't install this model", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(4.dp))
                             Text(
                                 state.message,
@@ -2019,6 +2079,17 @@ private fun LibraryScreen(
     onBrowseModels: () -> Unit,
     onOpenPlayground: () -> Unit,
 ) {
+    val installedModelKeys = remember(files) {
+        files.asSequence()
+            .filter { it.artifactSha256 != null }
+            .map { it.modelId to it.revision }
+            .toSet()
+    }
+    val installedModels = remember(models, installedModelKeys) {
+        models.filter { (it.modelId to it.revision) in installedModelKeys }
+    }
+    var expandedModelKey by rememberSaveable { mutableStateOf<String?>(null) }
+
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -2026,11 +2097,11 @@ private fun LibraryScreen(
     ) {
         item {
             Text(
-                "Pinned revisions and verified artifact status persist locally on this phone.",
+                "Installed models stay ready on this phone and work without sending prompts to the cloud.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
-        if (models.isEmpty()) {
+        if (installedModels.isEmpty()) {
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(20.dp)) {
@@ -2043,7 +2114,7 @@ private fun LibraryScreen(
                         Text("No models installed", style = MaterialTheme.typography.titleLarge)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Search Hugging Face, inspect a pinned revision, then download a verified model file.",
+                            "Choose a model from Hugging Face and AndroML will install the right version automatically.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -2061,60 +2132,69 @@ private fun LibraryScreen(
             }
         } else {
             items(
-                items = models,
+                items = installedModels,
                 key = { model -> "${model.modelId}@${model.revision}" },
             ) { model ->
                 val modelFiles = files.filter {
-                    it.modelId == model.modelId && it.revision == model.revision
+                    it.modelId == model.modelId &&
+                        it.revision == model.revision &&
+                        it.artifactSha256 != null
                 }
-                val verifiedFiles = modelFiles.count { it.artifactSha256 != null }
+                val modelKey = "${model.modelId}@${model.revision}"
+                val expanded = expandedModelKey == modelKey
+                val installedBytes = modelFiles.fold(0L) { total, file ->
+                    if (Long.MAX_VALUE - total < file.sizeBytes) Long.MAX_VALUE else total + file.sizeBytes
+                }
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(model.modelId, style = MaterialTheme.typography.titleLarge)
-                        Spacer(Modifier.height(4.dp))
-                        SelectionContainer {
-                            Text("Commit ${model.revision}", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(6.dp))
+                        StatusPill(text = "Ready", tone = NoticeTone.Success)
+                        Spacer(Modifier.height(6.dp))
                         Text(
                             buildString {
-                                append("${verifiedFiles}/${modelFiles.size} files verified")
+                                append(formatBytes(installedBytes))
                                 append(if (model.isPrivate) " · private" else " · public")
                                 if (model.isGated) append(" · gated")
                                 model.license?.let { append(" · license: $it") }
                             },
                             style = MaterialTheme.typography.bodyMedium,
                         )
-                        Spacer(Modifier.height(8.dp))
-                        modelFiles.take(MAX_LIBRARY_FILE_PREVIEW).forEach { file ->
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                Text(file.path, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        TextButton(
+                            onClick = {
+                                expandedModelKey = if (expanded) null else modelKey
+                            },
+                        ) {
+                            Text(if (expanded) "Hide details" else "Details")
+                        }
+                        if (expanded) {
+                            SelectionContainer {
+                                Text("Source commit ${model.revision}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            modelFiles.take(MAX_LIBRARY_FILE_PREVIEW).forEach { file ->
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    Text(
+                                        file.path,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Text(formatBytes(file.sizeBytes), style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                            if (modelFiles.size > MAX_LIBRARY_FILE_PREVIEW) {
+                                Spacer(Modifier.height(4.dp))
                                 Text(
-                                    if (file.artifactSha256 == null) "not downloaded" else "verified",
-                                    style = MaterialTheme.typography.labelMedium,
+                                    "${modelFiles.size - MAX_LIBRARY_FILE_PREVIEW} more installed files.",
+                                    style = MaterialTheme.typography.bodySmall,
                                 )
                             }
                         }
-                        if (modelFiles.size > MAX_LIBRARY_FILE_PREVIEW) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "${modelFiles.size - MAX_LIBRARY_FILE_PREVIEW} more files available in Discover.",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
                         Spacer(Modifier.height(10.dp))
-                        if (verifiedFiles > 0) {
-                            Button(onClick = onOpenPlayground, modifier = Modifier.fillMaxWidth()) {
-                                Icon(Icons.Outlined.PlayArrow, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Open in playground")
-                            }
-                        } else {
-                            TextButton(onClick = onBrowseModels) {
-                                Icon(Icons.Outlined.Explore, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Find a compatible file")
-                            }
+                        Button(onClick = onOpenPlayground, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Use this model")
                         }
                     }
                 }
