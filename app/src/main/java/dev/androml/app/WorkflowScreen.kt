@@ -1,6 +1,7 @@
 package dev.androml.app
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -28,6 +31,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -48,6 +52,7 @@ fun WorkflowScreen(
     controller: WorkflowController,
     definitionRepository: WorkflowDefinitionRepository,
     installedModelFiles: List<ModelFileEntity>,
+    onBrowseModels: () -> Unit,
 ) {
     val definitions by definitionRepository.observe().collectAsState(initial = emptyList())
     val lastRun by controller.lastRun.collectAsState()
@@ -62,6 +67,7 @@ fun WorkflowScreen(
     var input by remember { mutableStateOf("Explain what this model can do.") }
     var definitionJson by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
+    var messageTone by remember { mutableStateOf(NoticeTone.Info) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val selectedDefinition = definitions.firstOrNull { it.id.value == selectedWorkflowId }
@@ -71,18 +77,30 @@ fun WorkflowScreen(
             selectedModelHash = runnableModels.firstOrNull()?.artifactSha256
         }
     }
+    LaunchedEffect(definitions) {
+        if (selectedWorkflowId == null) {
+            selectedWorkflowId = definitions.firstOrNull()?.id?.value
+        }
+    }
     LaunchedEffect(selectedDefinition) {
         definitionJson = selectedDefinition?.let(WorkflowDefinitionCodec::encode).orEmpty()
     }
 
     fun reportFailure(error: Throwable, fallback: String) {
         message = error.message?.take(512) ?: fallback
+        messageTone = NoticeTone.Error
+    }
+
+    fun reportSuccess(text: String) {
+        message = text
+        messageTone = NoticeTone.Success
     }
 
     fun saveModelTemplate() {
         val hash = selectedModelHash
         if (hash == null) {
             message = "Download and verify a .litertlm model before creating a model workflow"
+            messageTone = NoticeTone.Error
             return
         }
         busy = true
@@ -90,7 +108,7 @@ fun WorkflowScreen(
             try {
                 val definition = withContext(Dispatchers.IO) { controller.saveStarterModelWorkflow(hash) }
                 selectedWorkflowId = definition.id.value
-                message = "Starter model workflow saved"
+                reportSuccess("Starter model workflow saved")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -109,7 +127,7 @@ fun WorkflowScreen(
                     controller.saveStarterRagWorkflow(collectionId.trim())
                 }
                 selectedWorkflowId = definition.id.value
-                message = "Starter RAG workflow saved"
+                reportSuccess("Starter RAG workflow saved")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -129,7 +147,7 @@ fun WorkflowScreen(
                 }
                 withContext(Dispatchers.IO) { controller.save(definition) }
                 selectedWorkflowId = definition.id.value
-                message = "Workflow JSON validated and saved"
+                reportSuccess("Workflow JSON validated and saved")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -144,6 +162,7 @@ fun WorkflowScreen(
         val definition = selectedDefinition
         if (definition == null) {
             message = "Select or save a workflow first"
+            messageTone = NoticeTone.Error
             return
         }
         busy = true
@@ -152,7 +171,7 @@ fun WorkflowScreen(
                 val result = withContext(Dispatchers.IO) {
                     controller.run(definition, WorkflowValue.Text(input.trim()))
                 }
-                message = "Workflow ${result.status.name.lowercase()}"
+                reportSuccess("Workflow ${result.status.name.lowercase()}")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -169,6 +188,7 @@ fun WorkflowScreen(
         val node = run?.waitingForNode
         if (definition == null || run == null || node == null) {
             message = "No workflow approval is waiting"
+            messageTone = NoticeTone.Error
             return
         }
         busy = true
@@ -182,7 +202,7 @@ fun WorkflowScreen(
                         input = WorkflowValue.Text(input.trim()),
                     )
                 }
-                message = "Approval submitted; workflow ${result.status.name.lowercase()}"
+                reportSuccess("Approval submitted; workflow ${result.status.name.lowercase()}")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -199,7 +219,6 @@ fun WorkflowScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text("Workflows", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Durable, bounded runs for models, agents, RAG, tools, branches, loops, and approvals. Model stages can be placed on trusted paired phones.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -211,16 +230,25 @@ fun WorkflowScreen(
                     Text("Create a starter workflow", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(8.dp))
                     if (runnableModels.isEmpty()) {
-                        Text("No verified .litertlm model is installed yet.", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "No verified LiteRT-LM model is installed yet. You can still create a RAG or agent workflow below.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     } else {
                         Text("Model artifact", style = MaterialTheme.typography.labelMedium)
-                        runnableModels.forEach { file ->
-                            val hash = file.artifactSha256 ?: return@forEach
-                            FilterChip(
-                                selected = selectedModelHash == hash,
-                                onClick = { selectedModelHash = hash },
-                                label = { Text(hash.take(16) + "…") },
-                            )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            runnableModels.forEach { file ->
+                                val hash = file.artifactSha256 ?: return@forEach
+                                FilterChip(
+                                    selected = selectedModelHash == hash,
+                                    onClick = { selectedModelHash = hash },
+                                    label = { Text(hash.take(16) + "…") },
+                                )
+                            }
                         }
                         Spacer(Modifier.height(8.dp))
                         Button(onClick = ::saveModelTemplate, enabled = !busy) {
@@ -249,7 +277,7 @@ fun WorkflowScreen(
                                         controller.saveStarterAgentWorkflow()
                                     }
                                     selectedWorkflowId = definition.id.value
-                                    message = "Starter agent workflow saved"
+                                    reportSuccess("Starter agent workflow saved")
                                 } catch (error: CancellationException) {
                                     throw error
                                 } catch (error: Throwable) {
@@ -264,6 +292,17 @@ fun WorkflowScreen(
                         Text("Save agent workflow")
                     }
                 }
+            }
+        }
+        if (runnableModels.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    icon = Icons.Outlined.Inventory2,
+                    title = "No workflow model is ready",
+                    description = "Download and verify a LiteRT-LM model before creating a model workflow.",
+                    actionLabel = "Browse compatible models",
+                    onAction = onBrowseModels,
+                )
             }
         }
         item {
@@ -287,6 +326,12 @@ fun WorkflowScreen(
                             TextButton(onClick = ::approveWorkflow, enabled = !busy) { Text("Approve") }
                         }
                     }
+                    Text(
+                        selectedDefinition?.let { "Selected: ${it.id.value} v${it.version}" }
+                            ?: "Select or save a workflow to enable Run",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -313,7 +358,12 @@ fun WorkflowScreen(
         }
         item { Text("Saved definitions", style = MaterialTheme.typography.titleMedium) }
         if (definitions.isEmpty()) {
-            item { Text("No definitions saved yet.") }
+            item {
+                NoticeBanner(
+                    message = "No definitions saved yet. Use a starter workflow above or import a validated JSON definition.",
+                    tone = NoticeTone.Info,
+                )
+            }
         } else {
             items(definitions, key = { "${it.id.value}:${it.version}" }) { definition ->
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -349,14 +399,7 @@ fun WorkflowScreen(
         }
         message?.let { currentMessage ->
             item {
-                Text(
-                    currentMessage,
-                    color = if (currentMessage.contains("invalid", true) || currentMessage.contains("could not", true)) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                )
+                NoticeBanner(message = currentMessage, tone = messageTone)
             }
         }
     }

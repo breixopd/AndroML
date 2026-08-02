@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Api
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Home
@@ -43,7 +44,6 @@ import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -312,6 +312,7 @@ private fun AndroMLApp() {
                     artifactStore = application.artifactStore,
                     benchmarkRepository = application.runtimeBenchmarkRepository,
                     settings = appSettings,
+                    onBrowseModels = { navigateTo(AppDestination.Discover) },
                 )
 
                 AppDestination.Discover -> DiscoverScreen(
@@ -321,6 +322,10 @@ private fun AndroMLApp() {
                     catalogRepository = catalogRepository,
                     secretStore = application.secretStore,
                     deviceProfile = deviceProfile,
+                    artifactDownloader = application.artifactDownloader,
+                    allowBackgroundDownloads = appSettings.allowBackgroundDownloads,
+                    onOpenLibrary = { navigateTo(AppDestination.Library) },
+                    onOpenPlayground = { navigateTo(AppDestination.Playground) },
                 )
 
                 AppDestination.Library -> LibraryScreen(
@@ -328,6 +333,7 @@ private fun AndroMLApp() {
                     models = catalogModels,
                     files = catalogFiles,
                     onBrowseModels = { navigateTo(AppDestination.Discover) },
+                    onOpenPlayground = { navigateTo(AppDestination.Playground) },
                 )
 
                 AppDestination.Rag -> RagScreen(
@@ -342,6 +348,7 @@ private fun AndroMLApp() {
                     controller = workflowController,
                     definitionRepository = workflowDefinitionRepository,
                     installedModelFiles = catalogFiles,
+                    onBrowseModels = { navigateTo(AppDestination.Discover) },
                 )
 
                 AppDestination.Api -> ApiScreen(
@@ -389,6 +396,7 @@ private fun PlaygroundScreen(
     artifactStore: FileArtifactStore,
     benchmarkRepository: dev.androml.core.database.RuntimeBenchmarkRepository,
     settings: AppSettings,
+    onBrowseModels: () -> Unit,
 ) {
     var prompt by remember { mutableStateOf("Say hello from the isolated runtime.") }
     var output by remember { mutableStateOf("") }
@@ -632,7 +640,6 @@ private fun PlaygroundScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text("Playground", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Run a verified model through a bundled isolated runtime. AndroML never substitutes a fake result for a real model.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -643,22 +650,25 @@ private fun PlaygroundScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Installed runnable models", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         FilterChip(
                             selected = selectedWorkload == ModelWorkload.TextGeneration,
                             onClick = { selectedWorkload = ModelWorkload.TextGeneration },
-                            label = { Text("Chat") },
+                            label = { Text("Chat", maxLines = 1, softWrap = false) },
                         )
                         FilterChip(
                             selected = selectedWorkload == ModelWorkload.TextEmbedding,
                             onClick = { selectedWorkload = ModelWorkload.TextEmbedding },
-                            label = { Text("Embeddings") },
+                            label = { Text("Embeddings", maxLines = 1, softWrap = false) },
                         )
                         if (selectedWorkload == ModelWorkload.TextGeneration) {
                             FilterChip(
                                 selected = distributed,
                                 onClick = { distributed = !distributed },
-                                label = { Text("Distributed") },
+                                label = { Text("Distributed", maxLines = 1, softWrap = false) },
                             )
                         }
                     }
@@ -666,7 +676,10 @@ private fun PlaygroundScreen(
                         listOf(ModelWorkload.ImageClassification, ModelWorkload.ObjectDetection),
                         listOf(ModelWorkload.ImageSegmentation, ModelWorkload.AudioClassification),
                     ).forEach { rowWorkloads ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             rowWorkloads.forEach { workload ->
                                 FilterChip(
                                     selected = selectedWorkload == workload,
@@ -680,6 +693,8 @@ private fun PlaygroundScreen(
                                                 ModelWorkload.AudioClassification -> "Audio class."
                                                 else -> workload.name
                                             },
+                                            maxLines = 1,
+                                            softWrap = false,
                                         )
                                     },
                                 )
@@ -689,20 +704,38 @@ private fun PlaygroundScreen(
                     Spacer(Modifier.height(6.dp))
                     if (runnableFiles.isEmpty()) {
                         Text(
-                            "No verified ${selectedWorkload.name} model artifact is installed. Discover and verify one from Hugging Face first.",
+                            "No verified artifact is installed for this workload yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } else {
                         Text("Select a content-addressed model artifact:", style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(6.dp))
-                        runnableFiles.forEach { file ->
-                            FilterChip(
-                                selected = file.artifactSha256 == selectedArtifactSha256,
-                                onClick = { selectedArtifactSha256 = file.artifactSha256 },
-                                label = { Text(file.path.take(48)) },
-                            )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            runnableFiles.forEach { file ->
+                                FilterChip(
+                                    selected = file.artifactSha256 == selectedArtifactSha256,
+                                    onClick = { selectedArtifactSha256 = file.artifactSha256 },
+                                    label = { Text(file.path.take(48), maxLines = 1, softWrap = false) },
+                                )
+                            }
                         }
                     }
                 }
+            }
+        }
+        if (runnableFiles.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    icon = Icons.Outlined.Inventory2,
+                    title = "Nothing ready for ${readableWorkloadName(selectedWorkload)}",
+                    description = "Discover a compatible model, verify its files, and it will appear here automatically.",
+                    actionLabel = "Browse compatible models",
+                    onAction = onBrowseModels,
+                )
             }
         }
         item {
@@ -726,14 +759,10 @@ private fun PlaygroundScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
-                    AssistChip(
-                        onClick = {},
-                        label = {
-                            Text(
-                                if (selectedFile == null) "No runtime selected"
-                                else "${selectedRuntimeId ?: "unknown"} · ${selectedWorkload.name}",
-                            )
-                        },
+                    StatusPill(
+                        text = if (selectedFile == null) "No runtime selected"
+                        else "${selectedRuntimeId ?: "unknown"} · ${readableWorkloadName(selectedWorkload)}",
+                        tone = if (optimizedWithBenchmarks.selected == null) NoticeTone.Error else NoticeTone.Info,
                     )
                 }
             }
@@ -897,10 +926,7 @@ private fun HomeScreen(
                     Spacer(Modifier.height(4.dp))
                     Text(releasePolicy.storeSubmissionStatus)
                     Spacer(Modifier.height(8.dp))
-                    AssistChip(
-                        onClick = {},
-                        label = { Text("GitHub Releases only") },
-                    )
+                    StatusPill(text = "GitHub Releases only", tone = NoticeTone.Info)
                 }
             }
         }
@@ -930,13 +956,36 @@ private fun HomeScreen(
             )
         }
         item {
-            Text("Recent activity", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (modelCount == 0) "Get started" else "Suggested next steps",
+                style = MaterialTheme.typography.titleMedium,
+            )
             HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
         }
-        items(listOf("Test-only release gate enabled", "No network services running")) { activity ->
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Text(activity, modifier = Modifier.weight(1f))
-                Text("now", style = MaterialTheme.typography.labelMedium)
+        val steps = if (modelCount == 0) {
+            listOf(
+                "1  Browse a recommended model for this device",
+                "2  Inspect the pinned revision and install one compatible file",
+                "3  Run the verified artifact in Playground",
+            )
+        } else {
+            listOf(
+                "Run a verified artifact in Playground",
+                "Add a local collection in RAG when you need citations",
+                "Enable API or pair a phone only when you need remote access",
+            )
+        }
+        items(steps) { step ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.CheckCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(step, modifier = Modifier.weight(1f))
             }
         }
     }
@@ -950,6 +999,10 @@ private fun DiscoverScreen(
     catalogRepository: ModelCatalogRepository,
     secretStore: SecretStore,
     deviceProfile: DeviceProfile,
+    artifactDownloader: dev.androml.core.network.HuggingFaceArtifactDownloader,
+    allowBackgroundDownloads: Boolean,
+    onOpenLibrary: () -> Unit,
+    onOpenPlayground: () -> Unit,
 ) {
     var importState by remember { mutableStateOf(HuggingFaceImportState()) }
     var accessToken by remember { mutableStateOf("") }
@@ -973,6 +1026,8 @@ private fun DiscoverScreen(
     var browseMessageIsError by remember { mutableStateOf(false) }
     var browsing by remember { mutableStateOf(false) }
     var browseJob by remember { mutableStateOf<Job?>(null) }
+    var directDownloadJob by remember { mutableStateOf<Job?>(null) }
+    var directDownloadId by remember { mutableStateOf<UUID?>(null) }
     var showAdvancedImport by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val browseSort = HuggingFaceModelSort.entries.firstOrNull { it.name == browseSortKey }
@@ -1163,8 +1218,22 @@ private fun DiscoverScreen(
     }
 
     fun cancelActiveDownload() {
+        val wasDirectDownload = directDownloadJob != null
+        val wasBackgroundDownload = activeWorkId != null
+        directDownloadJob?.cancel()
+        directDownloadJob = null
+        directDownloadId = null
         activeWorkId?.let { workManager.cancelWorkById(it) }
         activeWorkId = null
+        if (wasDirectDownload || wasBackgroundDownload) {
+            val current = downloadState as? HuggingFaceDownloadUiState.Running
+            if (current != null) {
+                downloadState = HuggingFaceDownloadUiState.Failed(
+                    path = current.path,
+                    message = "The download was canceled.",
+                )
+            }
+        }
     }
 
     fun clearResolvedSource() {
@@ -1268,28 +1337,86 @@ private fun DiscoverScreen(
     ) {
         val sha256 = descriptor.sha256 ?: return
         if (accessToken.isNotBlank() && (!tokenStored || tokenDirty)) {
-            tokenStorageMessage = "Save the current token securely before queueing a background download."
+            tokenStorageMessage = "Save the current token securely before starting this download."
             return
         }
-        val request = HuggingFaceDownloadWork.createRequest(reference, descriptor)
         lastDownloadRequest = HuggingFaceDownloadRequest(reference, descriptor)
-        val uniqueWorkName = "hf-download-$sha256"
-        try {
-            workManager.enqueueUniqueWork(
-                uniqueWorkName,
-                ExistingWorkPolicy.REPLACE,
-                request,
-            )
-            activeWorkId = request.id
-            downloadState = HuggingFaceDownloadUiState.Running(
-                path = descriptor.path,
-                totalBytes = descriptor.sizeBytes,
-            )
-        } catch (_: Exception) {
-            downloadState = HuggingFaceDownloadUiState.Failed(
-                path = descriptor.path,
-                message = "AndroML could not queue the background download.",
-            )
+        cancelActiveDownload()
+        downloadState = HuggingFaceDownloadUiState.Running(
+            path = descriptor.path,
+            totalBytes = descriptor.sizeBytes,
+        )
+        if (allowBackgroundDownloads) {
+            val request = HuggingFaceDownloadWork.createRequest(reference, descriptor)
+            val uniqueWorkName = "hf-download-$sha256"
+            try {
+                workManager.enqueueUniqueWork(
+                    uniqueWorkName,
+                    ExistingWorkPolicy.REPLACE,
+                    request,
+                )
+                activeWorkId = request.id
+            } catch (_: Exception) {
+                downloadState = HuggingFaceDownloadUiState.Failed(
+                    path = descriptor.path,
+                    message = "AndroML could not queue the background download.",
+                )
+            }
+        } else {
+            val requestId = UUID.randomUUID()
+            directDownloadId = requestId
+            directDownloadJob = scope.launch {
+                try {
+                    var lastProgressNanos = 0L
+                    val artifact = withContext(Dispatchers.IO) {
+                        artifactDownloader.download(
+                            reference = reference,
+                            descriptor = descriptor,
+                            jobKey = sha256,
+                            accessToken = accessToken.trim().takeIf(String::isNotEmpty),
+                            onProgress = { progress ->
+                                val now = System.nanoTime()
+                                if (progress.bytesWritten == progress.totalBytes ||
+                                    now - lastProgressNanos >= 500_000_000L
+                                ) {
+                                    lastProgressNanos = now
+                                    scope.launch {
+                                        if (directDownloadId == requestId &&
+                                            downloadState is HuggingFaceDownloadUiState.Running
+                                        ) {
+                                            downloadState = HuggingFaceDownloadUiState.Running(
+                                                path = descriptor.path,
+                                                bytesWritten = progress.bytesWritten,
+                                                totalBytes = progress.totalBytes,
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    }
+                    withContext(Dispatchers.IO) {
+                        catalogRepository.markArtifactVerified(reference, descriptor.path, artifact.sha256)
+                    }
+                    downloadState = HuggingFaceDownloadUiState.Complete(
+                        path = descriptor.path,
+                        sizeBytes = artifact.sizeBytes,
+                        sha256 = artifact.sha256,
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    downloadState = HuggingFaceDownloadUiState.Failed(
+                        path = descriptor.path,
+                        message = huggingFaceUserMessage(error),
+                    )
+                } finally {
+                    if (directDownloadId == requestId) {
+                        directDownloadId = null
+                        directDownloadJob = null
+                    }
+                }
+            }
         }
     }
 
@@ -1347,9 +1474,19 @@ private fun DiscoverScreen(
                         value = searchQuery,
                         onValueChange = { searchQuery = it.take(256) },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Search by model name or task") },
+                        label = { Text("Model or task") },
                         placeholder = { Text("Leave blank for recommendations") },
                         singleLine = true,
+                        trailingIcon = {
+                            if (searchQuery.isNotBlank()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Clear,
+                                        contentDescription = "Clear model search",
+                                    )
+                                }
+                            }
+                        },
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(
@@ -1385,15 +1522,13 @@ private fun DiscoverScreen(
                             Icon(Icons.Outlined.Search, contentDescription = null)
                             Spacer(Modifier.width(8.dp))
                         }
-                        Text(if (searchQuery.isBlank()) "Refresh recommendations" else "Search Hugging Face")
+                        Text(if (searchQuery.isBlank()) "Refresh" else "Search")
                     }
                     browseMessage?.let { message ->
                         Spacer(Modifier.height(6.dp))
-                        Text(
-                            message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (browseMessageIsError) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        NoticeBanner(
+                            message = message,
+                            tone = if (browseMessageIsError) NoticeTone.Error else NoticeTone.Info,
                         )
                     }
                 }
@@ -1665,16 +1800,25 @@ private fun DiscoverScreen(
             is HuggingFaceMetadataUiState.Failed -> {
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            state.message,
-                            modifier = Modifier.padding(16.dp),
-                            color = MaterialTheme.colorScheme.error,
-                        )
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            NoticeBanner(message = state.message, tone = NoticeTone.Error)
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(
+                                onClick = { inspectPinnedSource() },
+                                enabled = importState.reference != null,
+                            ) {
+                                Icon(Icons.Outlined.Refresh, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Retry inspection")
+                            }
+                        }
                     }
                 }
             }
 
             is HuggingFaceMetadataUiState.Loaded -> {
+                val runnableFiles = installableFiles(state.metadata)
+                val recommendedFile = runnableFiles.firstOrNull()
                 item {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
@@ -1701,10 +1845,30 @@ private fun DiscoverScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            recommendedFile?.let { descriptor ->
+                                Spacer(Modifier.height(10.dp))
+                                Button(
+                                    onClick = {
+                                        importState.reference?.let { reference ->
+                                            downloadFile(reference, descriptor)
+                                        }
+                                    },
+                                    enabled = downloadState !is HuggingFaceDownloadUiState.Running,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Icon(Icons.Outlined.Download, contentDescription = null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Install smallest compatible file")
+                                }
+                                Text(
+                                    "${descriptor.path} · ${formatBytes(descriptor.sizeBytes)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                 }
-                val runnableFiles = installableFiles(state.metadata)
                 if (runnableFiles.isEmpty()) {
                     item {
                         Card(modifier = Modifier.fillMaxWidth()) {
@@ -1772,7 +1936,11 @@ private fun DiscoverScreen(
                             }
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "The verified transfer continues in the background and can resume after a connection stop.",
+                                if (allowBackgroundDownloads) {
+                                    "The verified transfer continues in the background and can resume after a connection stop."
+                                } else {
+                                    "Background downloads are off. Keep Discover open until this verified transfer finishes."
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             TextButton(onClick = ::cancelActiveDownload) {
@@ -1794,6 +1962,22 @@ private fun DiscoverScreen(
                             )
                             SelectionContainer {
                                 Text("SHA-256 ${state.sha256}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Button(onClick = onOpenLibrary, modifier = Modifier.weight(1f)) {
+                                    Icon(Icons.Outlined.Inventory2, contentDescription = null)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Open library")
+                                }
+                                TextButton(onClick = onOpenPlayground, modifier = Modifier.weight(1f)) {
+                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Open playground")
+                                }
                             }
                         }
                     }
@@ -1833,6 +2017,7 @@ private fun LibraryScreen(
     models: List<ModelRecordEntity>,
     files: List<ModelFileEntity>,
     onBrowseModels: () -> Unit,
+    onOpenPlayground: () -> Unit,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -1840,7 +2025,6 @@ private fun LibraryScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text("Library", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Pinned revisions and verified artifact status persist locally on this phone.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -1918,6 +2102,20 @@ private fun LibraryScreen(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
+                        Spacer(Modifier.height(10.dp))
+                        if (verifiedFiles > 0) {
+                            Button(onClick = onOpenPlayground, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Outlined.PlayArrow, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Open in playground")
+                            }
+                        } else {
+                            TextButton(onClick = onBrowseModels) {
+                                Icon(Icons.Outlined.Explore, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Find a compatible file")
+                            }
+                        }
                     }
                 }
             }
@@ -1926,6 +2124,16 @@ private fun LibraryScreen(
 }
 
 private const val MAX_LIBRARY_FILE_PREVIEW = 8
+
+private fun readableWorkloadName(workload: ModelWorkload): String = when (workload) {
+    ModelWorkload.TextGeneration -> "chat"
+    ModelWorkload.TextEmbedding -> "embedding"
+    ModelWorkload.AudioClassification -> "audio classification"
+    ModelWorkload.ImageClassification -> "image classification"
+    ModelWorkload.ObjectDetection -> "object detection"
+    ModelWorkload.ImageSegmentation -> "image segmentation"
+    else -> workload.name.lowercase(Locale.ROOT).replace('_', ' ')
+}
 
 private fun List<dev.androml.core.model.HuggingFaceFileDescriptor>.totalBytes(): Long = fold(0L) { total, file ->
     if (Long.MAX_VALUE - total < file.sizeBytes) Long.MAX_VALUE else total + file.sizeBytes

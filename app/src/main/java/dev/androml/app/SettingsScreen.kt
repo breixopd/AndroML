@@ -28,6 +28,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
@@ -60,7 +62,6 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text("Settings", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Power-user controls are visible during the private phone-test period. Changes are stored locally on this device.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -93,12 +94,12 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Product controls", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(8.dp))
-                    SettingToggle(
-                        title = "Expert mode",
-                        detail = "Keep runtime, API, cluster, RAG, tools, and workflow controls visible.",
-                        checked = settings.expertMode,
-                        onCheckedChange = { update(settings.copy(expertMode = it)) },
+                    Text(
+                        "All power-user surfaces remain visible during the phone-test period. A simplified navigation mode is reserved for a future release.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Spacer(Modifier.height(8.dp))
                     SettingToggle(
                         title = "Auto-optimise runtime",
                         detail = "Pick a compatible bundled engine using device memory, ABI, thermal, and benchmark data.",
@@ -107,7 +108,7 @@ fun SettingsScreen(
                     )
                     SettingToggle(
                         title = "Background downloads",
-                        detail = "Allow WorkManager to resume verified Hugging Face downloads after navigation or reconnects.",
+                        detail = "Keep verified Hugging Face downloads resumable after navigation or reconnects.",
                         checked = settings.allowBackgroundDownloads,
                         onCheckedChange = { update(settings.copy(allowBackgroundDownloads = it)) },
                     )
@@ -285,7 +286,11 @@ private fun SettingToggle(
             Text(title, fontWeight = FontWeight.Bold)
             Text(detail, style = MaterialTheme.typography.bodySmall)
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier.semantics { contentDescription = title },
+        )
     }
     Spacer(Modifier.height(8.dp))
 }

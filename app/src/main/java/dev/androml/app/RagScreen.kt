@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -66,6 +68,7 @@ fun RagScreen(
     var results by remember { mutableStateOf<List<RagScreenResult>>(emptyList()) }
     var searchPairedPhones by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var messageTone by remember { mutableStateOf(NoticeTone.Info) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -90,10 +93,12 @@ fun RagScreen(
                 sourceLabel = "content://$uri"
                 documentText = imported.text
                 message = "Imported ${imported.format.name.lowercase(Locale.ROOT)} (${formatImportedBytes(imported.byteSize)}); review before indexing"
+                messageTone = NoticeTone.Info
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 message = error.message?.take(256) ?: "Document could not be imported"
+                messageTone = NoticeTone.Error
             } finally {
                 busy = false
             }
@@ -118,10 +123,12 @@ fun RagScreen(
                 }
                 selectedCollectionId = id.value
                 message = "Collection ready"
+                messageTone = NoticeTone.Success
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 message = error.message?.take(256) ?: "Collection could not be created"
+                messageTone = NoticeTone.Error
             } finally {
                 busy = false
             }
@@ -132,10 +139,12 @@ fun RagScreen(
         val targetCollection = selectedCollectionId
         if (targetCollection == null) {
             message = "Create or select a collection first"
+            messageTone = NoticeTone.Error
             return
         }
         if (documentText.isBlank()) {
             message = "Enter some document text first"
+            messageTone = NoticeTone.Error
             return
         }
         busy = true
@@ -167,11 +176,13 @@ fun RagScreen(
                     }
                 }
                 message = "Document stored, chunked, and indexed"
+                messageTone = NoticeTone.Success
                 documentText = ""
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 message = error.message?.take(256) ?: "Document could not be indexed"
+                messageTone = NoticeTone.Error
             } finally {
                 busy = false
             }
@@ -182,6 +193,7 @@ fun RagScreen(
         val targetCollection = selectedCollectionId
         if (targetCollection == null || query.isBlank()) {
             message = "Select a collection and enter a search query"
+            messageTone = NoticeTone.Error
             return
         }
         busy = true
@@ -204,16 +216,19 @@ fun RagScreen(
                         )
                     }
                     message = "${results.size} merged result(s) from ${results.map(RagScreenResult::nodeId).distinct().size} node(s)"
+                    messageTone = NoticeTone.Success
                 } else {
                     results = withContext(Dispatchers.IO) {
                         repository.search(CollectionId.parse(targetCollection), query.trim())
                     }.map { chunk -> RagScreenResult("this phone", chunk, null) }
                     message = "${results.size} hybrid result(s) with persisted vectors"
+                    messageTone = NoticeTone.Success
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
                 message = error.message?.take(256) ?: "Search failed"
+                messageTone = NoticeTone.Error
             } finally {
                 busy = false
             }
@@ -259,7 +274,10 @@ fun RagScreen(
                     if (collections.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
                         Text("Active collection", style = MaterialTheme.typography.labelLarge)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             collections.forEach { collection ->
                                 FilterChip(
                                     selected = collection.collectionId == selectedCollectionId,
@@ -350,7 +368,7 @@ fun RagScreen(
             }
         }
         message?.let { currentMessage ->
-            item { Text(currentMessage, color = MaterialTheme.colorScheme.primary) }
+            item { NoticeBanner(message = currentMessage, tone = messageTone) }
         }
         if (results.isNotEmpty()) {
             item { Text("Results", style = MaterialTheme.typography.titleMedium) }
@@ -375,7 +393,12 @@ fun RagScreen(
             }
         }
         if (collections.isEmpty()) {
-            item { Text("No collections yet. Create one to begin the local RAG workflow.") }
+            item {
+                NoticeBanner(
+                    message = "No collections yet. Create one above to begin the local RAG workflow.",
+                    tone = NoticeTone.Info,
+                )
+            }
         }
     }
 }
