@@ -1,6 +1,9 @@
 package dev.androml.app
 
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -31,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.androml.cluster.core.ClusterPeer
@@ -86,6 +90,24 @@ fun ClusterScreen(
     var transferArtifactHash by remember { mutableStateOf("") }
     var transferApproved by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var messageTone by remember { mutableStateOf(NoticeTone.Info) }
+    val hasActivePeers = peers.any { it.peer.paired && !it.peer.revoked }
+
+    fun showInfo(text: String) {
+        message = text
+        messageTone = NoticeTone.Info
+    }
+
+    fun showSuccess(text: String) {
+        message = text
+        messageTone = NoticeTone.Success
+    }
+
+    fun showError(text: String) {
+        message = text
+        messageTone = NoticeTone.Error
+    }
 
     LaunchedEffect(tlsIdentityStore) {
         try {
@@ -98,7 +120,7 @@ fun ClusterScreen(
         } catch (error: CancellationException) {
             throw error
         } catch (_: Throwable) {
-            message = "Cluster identity could not be loaded"
+            showError("Cluster identity could not be loaded")
         }
     }
 
@@ -141,12 +163,12 @@ fun ClusterScreen(
                     peer
                 }
                 controller.stop()
-                message = "Paired ${stored.displayName}; waiting for its first signed heartbeat"
+                showSuccess("Paired ${stored.displayName}; waiting for its first signed heartbeat")
                 certificateText = ""
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                message = error.message?.take(256) ?: "Peer could not be paired"
+                showError(error.message?.take(256) ?: "Peer could not be paired")
             } finally {
                 busy = false
             }
@@ -163,9 +185,9 @@ fun ClusterScreen(
             certificateText = Base64.getEncoder().encodeToString(
                 Base64.getUrlDecoder().decode(invite.certificateDerBase64),
             )
-            message = "Invite verified for ${invite.peerId.value}; review the endpoint and pin it below"
+            showInfo("Invite verified for ${invite.peerId.value}; review the endpoint and pin it below")
         } catch (error: Throwable) {
-            message = error.message?.take(256) ?: "Pairing invite could not be decoded"
+            showError(error.message?.take(256) ?: "Pairing invite could not be decoded")
         }
     }
 
@@ -173,11 +195,11 @@ fun ClusterScreen(
         val hostValue = advertisedHost.trim()
         val parsedPort = listenerPort.toIntOrNull()
         if (hostValue.isBlank()) {
-            message = "Enter a LAN hostname or IP that the other phone can reach"
+            showError("Enter a LAN hostname or IP that the other phone can reach")
             return
         }
         if (parsedPort == null || parsedPort !in 1024..65_535) {
-            message = "Listener port must be between 1024 and 65535"
+            showError("Listener port must be between 1024 and 65535")
             return
         }
         busy = true
@@ -187,11 +209,11 @@ fun ClusterScreen(
                 generatedPairingPayload = withContext(Dispatchers.IO) {
                     controller.createPairingInvite(hostValue, parsedPort)
                 }
-                message = "Invite created; it expires in five minutes. Pairing remains protected by certificate pinning."
+                showSuccess("Invite created; it expires in five minutes. Pairing remains protected by certificate pinning.")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                message = error.message?.take(256) ?: "Pairing invite could not be created"
+                showError(error.message?.take(256) ?: "Pairing invite could not be created")
             } finally {
                 busy = false
             }
@@ -204,11 +226,11 @@ fun ClusterScreen(
             try {
                 withContext(Dispatchers.IO) { repository.revoke(peer.peer.id) }
                 controller.stop()
-                message = "${peer.peer.displayName} revoked; its certificate can no longer authorize work"
+                showSuccess("${peer.peer.displayName} revoked; its certificate can no longer authorize work")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                message = error.message?.take(256) ?: "Peer could not be revoked"
+                showError(error.message?.take(256) ?: "Peer could not be revoked")
             } finally {
                 busy = false
             }
@@ -221,11 +243,11 @@ fun ClusterScreen(
             try {
                 withContext(Dispatchers.IO) { repository.remove(peer.peer.id) }
                 controller.stop()
-                message = "${peer.peer.displayName} and its stored certificate were removed"
+                showSuccess("${peer.peer.displayName} and its stored certificate were removed")
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                message = error.message?.take(256) ?: "Peer could not be removed"
+                showError(error.message?.take(256) ?: "Peer could not be removed")
             } finally {
                 busy = false
             }
@@ -235,7 +257,7 @@ fun ClusterScreen(
     fun refreshCapabilities() {
         val candidates = peers.filter { it.peer.paired && !it.peer.revoked }
         if (candidates.isEmpty()) {
-            message = "No active peers need a capability refresh"
+            showInfo("No active peers need a capability refresh")
             return
         }
         busy = true
@@ -256,15 +278,16 @@ fun ClusterScreen(
                         }
                     }
                 }
-                message = if (failures.isEmpty()) {
+                val refreshedMessage = if (failures.isEmpty()) {
                     "Refreshed capabilities from $refreshed peer(s)"
                 } else {
                     "Refreshed $refreshed peer(s); ${failures.joinToString(limit = 2)}"
                 }
+                if (failures.isEmpty()) showSuccess(refreshedMessage) else showInfo(refreshedMessage)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                message = error.message?.take(256) ?: "Capabilities could not be refreshed"
+                showError(error.message?.take(256) ?: "Capabilities could not be refreshed")
             } finally {
                 busy = false
             }
@@ -275,17 +298,17 @@ fun ClusterScreen(
         val parsedPeer = try {
             PeerId.parse(transferPeerId.trim().lowercase(Locale.ROOT))
         } catch (error: Throwable) {
-            message = error.message?.take(256) ?: "Peer ID is invalid"
+            showError(error.message?.take(256) ?: "Peer ID is invalid")
             return
         }
         val parsedHash = try {
             ContentHash.parse(transferArtifactHash.trim().lowercase(Locale.ROOT))
         } catch (error: Throwable) {
-            message = error.message?.take(256) ?: "Artifact hash is invalid"
+            showError(error.message?.take(256) ?: "Artifact hash is invalid")
             return
         }
         if (!transferApproved) {
-            message = "Confirm owner approval before transferring a model"
+            showError("Confirm owner approval before transferring a model")
             return
         }
         busy = true
@@ -295,11 +318,12 @@ fun ClusterScreen(
                 val ack = withContext(Dispatchers.IO) {
                     controller.transferModel(parsedPeer, parsedHash, ownerApproved = true)
                 }
-                message = "Transferred ${ack.artifactHash.value.take(12)}… to ${parsedPeer.value}"
+                showSuccess("Transferred ${ack.artifactHash.value.take(12)}… to ${parsedPeer.value}")
+                transferApproved = false
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                message = error.message?.take(256) ?: "Model transfer failed"
+                showError(error.message?.take(256) ?: "Model transfer failed")
             } finally {
                 busy = false
             }
@@ -312,7 +336,6 @@ fun ClusterScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Text("Cluster", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Pair trusted phones, inspect capability advertisements, and prepare secure whole-request replica/workflow/RAG placement. WAN federation and tensor sharding are not enabled.",
                 style = MaterialTheme.typography.bodyMedium,
@@ -329,17 +352,24 @@ fun ClusterScreen(
                     Spacer(Modifier.height(8.dp))
                     when (val state = listenerState) {
                         ClusterControllerState.Disabled -> {
-                            Text("Disabled", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            StatusPill("Disabled", tone = NoticeTone.Info)
                         }
                         is ClusterControllerState.Running -> {
-                            Text(
+                            StatusPill(
                                 "Listening on ${state.host}:${state.port} · ${state.pairedPeerCount} trusted peer(s)",
-                                color = MaterialTheme.colorScheme.primary,
+                                tone = NoticeTone.Success,
                             )
                         }
                         is ClusterControllerState.Failed -> {
-                            Text("Failed: ${state.message}", color = MaterialTheme.colorScheme.error)
+                            StatusPill("Failed: ${state.message}", tone = NoticeTone.Error)
                         }
+                    }
+                    if (!hasActivePeers && listenerState !is ClusterControllerState.Running) {
+                        Spacer(Modifier.height(6.dp))
+                        NoticeBanner(
+                            message = "Pair at least one trusted phone before starting the cluster listener.",
+                            tone = NoticeTone.Info,
+                        )
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -359,7 +389,7 @@ fun ClusterScreen(
                                     try {
                                         if (listenerState is ClusterControllerState.Running) {
                                             controller.stop()
-                                            message = "Cluster listener stopped"
+                                            showSuccess("Cluster listener stopped")
                                         } else {
                                             val parsedPort = listenerPort.toIntOrNull()
                                                 ?: throw IllegalArgumentException("listener port must be a number")
@@ -370,21 +400,21 @@ fun ClusterScreen(
                                                 controller.start(parsedPort)
                                             }
                                             if (nextState is ClusterControllerState.Failed) {
-                                                message = nextState.message
+                                                showError(nextState.message)
                                             } else {
-                                                message = "Cluster listener enabled"
+                                                showSuccess("Cluster listener enabled")
                                             }
                                         }
                                     } catch (error: CancellationException) {
                                         throw error
                                     } catch (error: Throwable) {
-                                        message = error.message?.take(256) ?: "Cluster listener could not be changed"
+                                        showError(error.message?.take(256) ?: "Cluster listener could not be changed")
                                     } finally {
                                         busy = false
                                     }
                                 }
                             },
-                            enabled = !busy,
+                            enabled = !busy && (listenerState is ClusterControllerState.Running || hasActivePeers),
                             modifier = Modifier.align(androidx.compose.ui.Alignment.CenterVertically),
                         ) {
                             Text(if (listenerState is ClusterControllerState.Running) "Stop" else "Start")
@@ -407,6 +437,24 @@ fun ClusterScreen(
                     generatedPairingPayload?.let { payload ->
                         Text("Share this QR/deep-link payload", style = MaterialTheme.typography.labelLarge)
                         SelectionContainer { Text(payload, style = MaterialTheme.typography.bodySmall) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = {
+                                context.startActivity(
+                                    Intent.createChooser(
+                                        Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, payload)
+                                        },
+                                        "Share pairing invite",
+                                    ),
+                                )
+                            }) {
+                                Text("Share invite")
+                            }
+                            TextButton(onClick = { generatedPairingPayload = null }) {
+                                Text("Clear")
+                            }
+                        }
                     }
                 }
             }
@@ -545,7 +593,10 @@ fun ClusterScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text("Allowed work types", style = MaterialTheme.typography.labelLarge)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         ClusterWorkload.entries.forEach { workload ->
                             FilterChip(
                                 selected = workload in selectedWorkloads,
@@ -568,7 +619,7 @@ fun ClusterScreen(
             }
         }
         message?.let { currentMessage ->
-            item { Text(currentMessage, color = MaterialTheme.colorScheme.primary) }
+            item { NoticeBanner(message = currentMessage, tone = messageTone) }
         }
         item {
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -628,7 +679,12 @@ fun ClusterScreen(
             }
         }
         if (peers.isEmpty()) {
-            item { Text("No peers are paired. Pair a phone before starting the cluster listener.") }
+            item {
+                NoticeBanner(
+                    message = "No peers are paired. Pin a phone above before starting the cluster listener.",
+                    tone = NoticeTone.Info,
+                )
+            }
         } else {
             items(peers, key = { it.peer.id.value }) { stored ->
                 ClusterPeerCard(

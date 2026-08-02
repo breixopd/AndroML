@@ -1,5 +1,7 @@
 package dev.androml.app
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -30,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.androml.core.api.ApiScope
@@ -76,6 +79,8 @@ fun ApiScreen(
     var tlsBusy by remember { mutableStateOf(false) }
     var auditEvents by remember { mutableStateOf<List<ToolAuditEntity>>(emptyList()) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val hasUsableKey = keys.any { it.isUsableAt(System.currentTimeMillis()) }
 
     fun refreshKeys() {
         scope.launch {
@@ -186,6 +191,10 @@ fun ApiScreen(
             message = "Port must be a number between 1024 and 65535"
             return
         }
+        if (!hasUsableKey) {
+            message = "Create an active API key before enabling the server"
+            return
+        }
         busy = true
         message = null
         scope.launch {
@@ -213,6 +222,10 @@ fun ApiScreen(
         val selectedPort = port.toIntOrNull()
         if (selectedPort == null) {
             message = "Port must be a number between 1024 and 65535"
+            return
+        }
+        if (!hasUsableKey) {
+            message = "Create an active API key before enabling the server"
             return
         }
         if (clientCertificates.none { it.revokedAtEpochMillis == null }) {
@@ -351,6 +364,22 @@ fun ApiScreen(
                         },
                         fontWeight = FontWeight.Bold,
                     )
+                    if (!hasUsableKey && apiState !is LocalApiState.Running) {
+                        Spacer(Modifier.height(6.dp))
+                        NoticeBanner(
+                            message = "Create an active scoped API key below before enabling the server. Health checks remain unauthenticated; model and inference routes do not.",
+                            tone = NoticeTone.Info,
+                        )
+                    } else if (hasUsableKey &&
+                        clientCertificates.none { it.revokedAtEpochMillis == null } &&
+                        apiState !is LocalApiState.Running
+                    ) {
+                        Spacer(Modifier.height(6.dp))
+                        NoticeBanner(
+                            message = "Loopback is ready. LAN access also needs one active trusted client certificate.",
+                            tone = NoticeTone.Info,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = port,
@@ -379,7 +408,7 @@ fun ApiScreen(
                         ) {
                             Button(
                                 onClick = ::startLoopbackServer,
-                                enabled = !busy,
+                                enabled = !busy && hasUsableKey,
                                 modifier = Modifier.weight(1f),
                             ) {
                                 if (busy) CircularProgressIndicator()
@@ -387,7 +416,9 @@ fun ApiScreen(
                             }
                             OutlinedButton(
                                 onClick = ::startLanServer,
-                                enabled = !busy,
+                                enabled = !busy && hasUsableKey && clientCertificates.any {
+                                    it.revokedAtEpochMillis == null
+                                },
                                 modifier = Modifier.weight(1f),
                             ) {
                                 Text("Enable LAN")
@@ -634,19 +665,31 @@ fun ApiScreen(
                         Text("AndroML stores only a hash. Closing or leaving this screen loses the plaintext token.")
                         Spacer(Modifier.height(8.dp))
                         SelectionContainer { Text(token, style = MaterialTheme.typography.bodySmall) }
-                        Spacer(Modifier.height(4.dp))
-                        TextButton(onClick = { generatedToken = null }) { Text("Hide secret") }
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = {
+                                context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(
+                                    ClipData.newPlainText("AndroML API token", token),
+                                )
+                                message = "Token copied; clear the clipboard when you are done."
+                            }) {
+                                Text("Copy token")
+                            }
+                            TextButton(onClick = { generatedToken = null }) { Text("Hide secret") }
+                        }
                     }
                 }
             }
         }
         message?.let { currentMessage ->
             item {
-                Text(
-                    currentMessage,
-                    color = if (currentMessage.contains("could not", ignoreCase = true) ||
-                        currentMessage.contains("fail", ignoreCase = true)
-                    ) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                NoticeBanner(
+                    message = currentMessage,
+                    tone = if (currentMessage.contains("could not", ignoreCase = true) ||
+                        currentMessage.contains("fail", ignoreCase = true) ||
+                        currentMessage.contains("before", ignoreCase = true) ||
+                        currentMessage.contains("rejected", ignoreCase = true)
+                    ) NoticeTone.Error else NoticeTone.Success,
                 )
             }
         }
@@ -654,7 +697,12 @@ fun ApiScreen(
             Text("Stored keys", style = MaterialTheme.typography.titleMedium)
         }
         if (keys.isEmpty()) {
-            item { Text("No API keys exist. Create one before enabling the server.") }
+            item {
+                NoticeBanner(
+                    message = "No API keys exist. Create one above before enabling the server.",
+                    tone = NoticeTone.Info,
+                )
+            }
         } else {
             items(keys, key = { it.id.value }) { key ->
                 ApiKeyCard(
