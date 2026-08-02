@@ -2,6 +2,13 @@
 
 All notable changes to AndroML are documented here.
 
+## [1.0.3](https://github.com/breixopd/AndroML/compare/v1.0.2...v1.0.3) (2026-08-02)
+
+
+### Bug Fixes
+
+* **ux:** streamline end-to-end app flows ([82edaf0](https://github.com/breixopd/AndroML/commit/82edaf0bf5a5d7123a3f1c1d6219471941c3e390))
+
 ## [1.0.2](https://github.com/breixopd/AndroML/compare/v1.0.1...v1.0.2) (2026-08-02)
 
 
