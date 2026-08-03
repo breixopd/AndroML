@@ -26,10 +26,15 @@ cp "$aab_source" "$artifact_dir/$aab_name"
 
 ./scripts/verify-test-release.sh "$artifact_dir/$artifact_name" "$version_name"
 ./scripts/verify-test-release.sh "$artifact_dir/$arm64_artifact_name" "$version_name" arm64-v8a
-sha256sum "$artifact_dir/$artifact_name" > "$artifact_dir/$artifact_name.sha256"
-sha512sum "$artifact_dir/$artifact_name" > "$artifact_dir/$artifact_name.sha512"
-sha256sum "$artifact_dir/$arm64_artifact_name" > "$artifact_dir/$arm64_artifact_name.sha256"
-sha512sum "$artifact_dir/$arm64_artifact_name" > "$artifact_dir/$arm64_artifact_name.sha512"
+(
+    cd "$artifact_dir"
+    sha256sum "$artifact_name" > "$artifact_name.sha256"
+    sha512sum "$artifact_name" > "$artifact_name.sha512"
+    sha256sum "$arm64_artifact_name" > "$arm64_artifact_name.sha256"
+    sha512sum "$arm64_artifact_name" > "$arm64_artifact_name.sha512"
+    sha256sum -c "$artifact_name.sha256" "$arm64_artifact_name.sha256"
+    sha512sum -c "$artifact_name.sha512" "$arm64_artifact_name.sha512"
+)
 apk_sha256="$(sha256sum "$artifact_dir/$artifact_name" | awk '{print $1}')"
 arm64_apk_sha256="$(sha256sum "$artifact_dir/$arm64_artifact_name" | awk '{print $1}')"
 aab_sha256="$(sha256sum "$artifact_dir/$aab_name" | awk '{print $1}')"
