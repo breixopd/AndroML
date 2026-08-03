@@ -35,14 +35,12 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
 import dev.androml.core.model.AppSettings
 import dev.androml.core.model.DeviceProfile
-import dev.androml.core.model.ReleasePolicy
 import dev.androml.runtime.api.RuntimePackInfo
 
 @Composable
 fun SettingsScreen(
     modifier: Modifier = Modifier,
     deviceProfile: DeviceProfile,
-    releasePolicy: ReleasePolicy,
     runtimePacks: List<RuntimePackInfo>,
     apiState: LocalApiState,
     settings: AppSettings,
@@ -63,7 +61,7 @@ fun SettingsScreen(
     ) {
         item {
             Text(
-                "Power-user controls are visible during the private phone-test period. Changes are stored locally on this device.",
+                "Configure how AndroML runs models and manages this device. Changes are stored locally.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -95,7 +93,7 @@ fun SettingsScreen(
                     Text("Product controls", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "All power-user surfaces remain visible during the phone-test period. A simplified navigation mode is reserved for a future release.",
+                        "Tune automatic runtime selection, downloads, and thermal safeguards.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -124,10 +122,7 @@ fun SettingsScreen(
         item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Release and privacy gate", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(6.dp))
-                    Text(releasePolicy.storeSubmissionStatus, fontWeight = FontWeight.Bold)
-                    Text("Store submissions are disabled in this build. Only owner-approved GitHub Releases are allowed during phone testing.")
+                    Text("Privacy", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text("No telemetry, model bytes, prompts, or API credentials leave the app unless you explicitly enable a network API or paired cluster.")
                 }

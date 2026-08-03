@@ -10,6 +10,7 @@ import android.os.Message
 import android.os.Messenger
 import android.os.ParcelFileDescriptor
 import android.os.RemoteException
+import androidx.core.os.BundleCompat
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelWorkload
 import dev.androml.runtime.api.InferenceErrorCode
@@ -99,8 +100,11 @@ class InferenceProcessService : Service() {
     private fun openSession(data: Bundle, replyTo: Messenger) {
         val runtimeId = data.getString(InferenceServiceProtocol.RUNTIME_ID_KEY)
             ?.let { runCatching { dev.androml.runtime.api.RuntimeId.parse(it) }.getOrNull() }
-        @Suppress("DEPRECATION")
-        val modelFile = data.getParcelable(InferenceServiceProtocol.MODEL_FD_KEY) as? ParcelFileDescriptor
+        val modelFile = BundleCompat.getParcelable(
+            data,
+            InferenceServiceProtocol.MODEL_FD_KEY,
+            ParcelFileDescriptor::class.java,
+        )
         val workload = data.getString(InferenceServiceProtocol.MODEL_WORKLOAD_KEY)
             ?.takeIf { it.length <= InferenceServiceProtocol.MAX_MODEL_WORKLOAD_CHARS }
             ?.let { raw -> runCatching { ModelWorkload.valueOf(raw) }.getOrNull() }
@@ -341,7 +345,6 @@ class InferenceProcessService : Service() {
     }
 
     private fun parseTensorInput(data: Bundle): TensorInput? {
-        @Suppress("DEPRECATION")
         val bytes = data.getByteArray(InferenceServiceProtocol.TENSOR_INPUT_DATA_KEY) ?: return null
         val shape = data.getLongArray(InferenceServiceProtocol.TENSOR_INPUT_SHAPE_KEY) ?: return null
         val type = data.getString(InferenceServiceProtocol.TENSOR_INPUT_TYPE_KEY)
