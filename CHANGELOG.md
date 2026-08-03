@@ -2,6 +2,13 @@
 
 All notable changes to AndroML are documented here.
 
+## [1.0.7](https://github.com/breixopd/AndroML/compare/v1.0.6...v1.0.7) (2026-08-03)
+
+
+### Bug Fixes
+
+* **cluster:** request local network access ([#17](https://github.com/breixopd/AndroML/issues/17)) ([6a97602](https://github.com/breixopd/AndroML/commit/6a976026f919f2cdeef570b8d3db7c2915ab5f9f))
+
 ## [1.0.6](https://github.com/breixopd/AndroML/compare/v1.0.5...v1.0.6) (2026-08-03)
 
 
