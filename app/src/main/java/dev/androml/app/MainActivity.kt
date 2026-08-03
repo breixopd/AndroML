@@ -96,7 +96,6 @@ import dev.androml.core.model.AppSettings
 import dev.androml.core.model.ModelRequirements
 import dev.androml.core.model.ModelFormatClassifier
 import dev.androml.core.model.ModelWorkload
-import dev.androml.core.model.ReleasePolicy
 import dev.androml.core.network.HuggingFaceEndpoints
 import dev.androml.core.network.HuggingFaceModelClient
 import dev.androml.core.network.HuggingFaceModelSort
@@ -289,7 +288,6 @@ private fun AndroMLApp() {
             when (selectedDestination) {
                 AppDestination.Home -> HomeScreen(
                     modifier = Modifier.padding(paddingValues),
-                    releasePolicy = ReleasePolicy.testPeriod(),
                     deviceProfile = deviceProfile,
                     modelCount = catalogFiles
                         .asSequence()
@@ -370,7 +368,6 @@ private fun AndroMLApp() {
                 AppDestination.Settings -> SettingsScreen(
                     modifier = Modifier.padding(paddingValues),
                     deviceProfile = deviceProfile,
-                    releasePolicy = ReleasePolicy.testPeriod(),
                     runtimePacks = RuntimePackCatalog.production,
                     apiState = apiState,
                     settings = appSettings,
@@ -864,7 +861,6 @@ private fun PlaygroundScreen(
 @Composable
 private fun HomeScreen(
     modifier: Modifier = Modifier,
-    releasePolicy: ReleasePolicy,
     deviceProfile: DeviceProfile,
     modelCount: Int,
     bundledRuntimeCount: Int,
@@ -911,21 +907,6 @@ private fun HomeScreen(
                         Spacer(Modifier.width(8.dp))
                         Text("Open playground")
                     }
-                }
-            }
-        }
-        item {
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                shape = MaterialTheme.shapes.large,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Private phone test", fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    Text(releasePolicy.storeSubmissionStatus)
-                    Spacer(Modifier.height(8.dp))
-                    StatusPill(text = "GitHub Releases only", tone = NoticeTone.Info)
                 }
             }
         }
@@ -2256,7 +2237,6 @@ private fun StatusCard(title: String, value: String, detail: String) {
 private fun HomeScreenPreview() {
     AndroMLTheme {
         HomeScreen(
-            releasePolicy = ReleasePolicy.testPeriod(),
             deviceProfile = DeviceProfile(
                 manufacturer = "Google",
                 model = "Pixel Preview",

@@ -136,7 +136,6 @@ class InferenceServiceClient(context: Context) {
                     putInt(InferenceServiceProtocol.CPU_THREADS_KEY, configuration.cpuThreads)
                     putBoolean(InferenceServiceProtocol.USE_ACCELERATION_KEY, configuration.useAcceleration)
                     putString(InferenceServiceProtocol.RUNTIME_ID_KEY, runtimeId.value)
-                    @Suppress("DEPRECATION")
                     modelFile?.let { putParcelable(InferenceServiceProtocol.MODEL_FD_KEY, it) }
                 },
             )

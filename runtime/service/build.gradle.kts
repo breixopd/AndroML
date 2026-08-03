@@ -19,6 +19,7 @@ dependencies {
     implementation(project(":runtime:executorch"))
     implementation(project(":runtime:llamacpp"))
     implementation(project(":core:model"))
+    implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
 }
