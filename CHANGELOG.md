@@ -2,6 +2,15 @@
 
 All notable changes to AndroML are documented here.
 
+## [1.0.6](https://github.com/breixopd/AndroML/compare/v1.0.5...v1.0.6) (2026-08-03)
+
+
+### Bug Fixes
+
+* **ci:** declare CodeQL manual build mode ([#15](https://github.com/breixopd/AndroML/issues/15)) ([6c7469e](https://github.com/breixopd/AndroML/commit/6c7469ef5ff97c8bcf5e680aae632cc6a326d6bc))
+* **ci:** use CodeQL no-build analysis ([#16](https://github.com/breixopd/AndroML/issues/16)) ([a3cda09](https://github.com/breixopd/AndroML/commit/a3cda09c124fbc292d162c0d755f0d8cb4587d6f))
+* **ui:** remove internal test messaging ([#13](https://github.com/breixopd/AndroML/issues/13)) ([a7e6ec4](https://github.com/breixopd/AndroML/commit/a7e6ec47b1391201c1fe78275ce05493f096a204))
+
 ## [1.0.5](https://github.com/breixopd/AndroML/compare/v1.0.4...v1.0.5) (2026-08-03)
 
 
