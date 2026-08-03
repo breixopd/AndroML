@@ -2,6 +2,13 @@
 
 All notable changes to AndroML are documented here.
 
+## [1.0.5](https://github.com/breixopd/AndroML/compare/v1.0.4...v1.0.5) (2026-08-03)
+
+
+### Bug Fixes
+
+* **ci:** harden release verification ([4a8e17a](https://github.com/breixopd/AndroML/commit/4a8e17a8280642c7d26323bd586f3bdb869a1db7))
+
 ## [1.0.4](https://github.com/breixopd/AndroML/compare/v1.0.3...v1.0.4) (2026-08-02)
 
 
