@@ -15,7 +15,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExtensionOff
 import androidx.compose.material.icons.outlined.Memory
@@ -64,28 +63,6 @@ fun SettingsScreen(
                 "Configure how AndroML runs models and manages this device. Changes are stored locally.",
                 style = MaterialTheme.typography.bodyMedium,
             )
-        }
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.DarkMode,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text("Appearance follows your phone", fontWeight = FontWeight.Bold)
-                        Text(
-                            "AndroML automatically uses the system light or dark theme.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-            }
         }
         item {
             Card(modifier = Modifier.fillMaxWidth()) {

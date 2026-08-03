@@ -1,6 +1,11 @@
 package dev.androml.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -37,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import dev.androml.cluster.core.ClusterPeer
 import dev.androml.cluster.core.ClusterPairingInviteIssuer
 import dev.androml.cluster.core.ClusterWorkload
@@ -91,6 +97,7 @@ fun ClusterScreen(
     var transferApproved by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    var pendingLocalNetworkAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     var messageTone by remember { mutableStateOf(NoticeTone.Info) }
     val hasActivePeers = peers.any { it.peer.paired && !it.peer.revoked }
 
@@ -107,6 +114,27 @@ fun ClusterScreen(
     fun showError(text: String) {
         message = text
         messageTone = NoticeTone.Error
+    }
+
+    val localNetworkPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val pendingAction = pendingLocalNetworkAction
+        pendingLocalNetworkAction = null
+        if (granted) {
+            pendingAction?.invoke()
+        } else {
+            showError("Local network access is required to connect to another phone")
+        }
+    }
+
+    fun withLocalNetworkAccess(action: () -> Unit) {
+        if (context.hasLocalNetworkAccess()) {
+            action()
+        } else {
+            pendingLocalNetworkAction = action
+            localNetworkPermissionLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
+        }
     }
 
     LaunchedEffect(tlsIdentityStore) {
@@ -220,6 +248,39 @@ fun ClusterScreen(
         }
     }
 
+    fun changeListener() {
+        busy = true
+        message = null
+        scope.launch {
+            try {
+                if (listenerState is ClusterControllerState.Running) {
+                    controller.stop()
+                    showSuccess("Cluster listener stopped")
+                } else {
+                    val parsedPort = listenerPort.toIntOrNull()
+                        ?: throw IllegalArgumentException("listener port must be a number")
+                    require(parsedPort in 1024..65535) {
+                        "listener port must be between 1024 and 65535"
+                    }
+                    val nextState = withContext(Dispatchers.IO) {
+                        controller.start(parsedPort)
+                    }
+                    if (nextState is ClusterControllerState.Failed) {
+                        showError(nextState.message)
+                    } else {
+                        showSuccess("Cluster listener enabled")
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                showError(error.message?.take(256) ?: "Cluster listener could not be changed")
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     fun revokePeer(peer: StoredClusterPeer) {
         busy = true
         scope.launch {
@@ -279,9 +340,9 @@ fun ClusterScreen(
                     }
                 }
                 val refreshedMessage = if (failures.isEmpty()) {
-                    "Refreshed capabilities from $refreshed peer(s)"
+                    "Connected to $refreshed paired phone(s)"
                 } else {
-                    "Refreshed $refreshed peer(s); ${failures.joinToString(limit = 2)}"
+                    "Connected to $refreshed phone(s); unavailable: ${failures.joinToString(limit = 2)}"
                 }
                 if (failures.isEmpty()) showSuccess(refreshedMessage) else showInfo(refreshedMessage)
             } catch (error: CancellationException) {
@@ -337,7 +398,7 @@ fun ClusterScreen(
     ) {
         item {
             Text(
-                "Pair trusted phones, inspect capability advertisements, and prepare secure whole-request replica/workflow/RAG placement. WAN federation and tensor sharding are not enabled.",
+                "Use another trusted phone to run models, search its RAG collections, or handle workflow steps.",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -346,7 +407,7 @@ fun ClusterScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Cluster listener", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Enable the local mTLS endpoint after pairing at least one phone. Secure whole-request inference replicas, distributed RAG fan-out, and workflow-stage placement use the same trusted peer ledger.",
+                        "Allow paired phones to send work to this phone.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
@@ -383,35 +444,10 @@ fun ClusterScreen(
                         )
                         Button(
                             onClick = {
-                                busy = true
-                                message = null
-                                scope.launch {
-                                    try {
-                                        if (listenerState is ClusterControllerState.Running) {
-                                            controller.stop()
-                                            showSuccess("Cluster listener stopped")
-                                        } else {
-                                            val parsedPort = listenerPort.toIntOrNull()
-                                                ?: throw IllegalArgumentException("listener port must be a number")
-                                            require(parsedPort in 1024..65535) {
-                                                "listener port must be between 1024 and 65535"
-                                            }
-                                            val nextState = withContext(Dispatchers.IO) {
-                                                controller.start(parsedPort)
-                                            }
-                                            if (nextState is ClusterControllerState.Failed) {
-                                                showError(nextState.message)
-                                            } else {
-                                                showSuccess("Cluster listener enabled")
-                                            }
-                                        }
-                                    } catch (error: CancellationException) {
-                                        throw error
-                                    } catch (error: Throwable) {
-                                        showError(error.message?.take(256) ?: "Cluster listener could not be changed")
-                                    } finally {
-                                        busy = false
-                                    }
+                                if (listenerState is ClusterControllerState.Running) {
+                                    changeListener()
+                                } else {
+                                    withLocalNetworkAccess(::changeListener)
                                 }
                             },
                             enabled = !busy && (listenerState is ClusterControllerState.Running || hasActivePeers),
@@ -469,7 +505,15 @@ fun ClusterScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { discovery.startDiscovery() }, enabled = !busy) { Text("Scan") }
+                        Button(
+                            onClick = {
+                                withLocalNetworkAccess {
+                                    runCatching(discovery::startDiscovery)
+                                        .onFailure { showError("Could not scan the local network") }
+                                }
+                            },
+                            enabled = !busy,
+                        ) { Text("Scan") }
                         TextButton(onClick = { discovery.stopDiscovery() }, enabled = discoveredServices.isNotEmpty()) { Text("Clear") }
                     }
                     discoveredServices.forEach { service ->
@@ -624,8 +668,11 @@ fun ClusterScreen(
         item {
             Row(modifier = Modifier.fillMaxWidth()) {
                 Text("Paired peers", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = ::refreshCapabilities, enabled = !busy && peers.isNotEmpty()) {
-                    Text("Refresh capabilities")
+                TextButton(
+                    onClick = { withLocalNetworkAccess(::refreshCapabilities) },
+                    enabled = !busy && peers.isNotEmpty(),
+                ) {
+                    Text("Test connections")
                 }
             }
         }
@@ -669,7 +716,7 @@ fun ClusterScreen(
                         )
                     }
                     Button(
-                        onClick = ::transferModel,
+                        onClick = { withLocalNetworkAccess(::transferModel) },
                         enabled = !busy && transferPeerId.isNotBlank() && transferArtifactHash.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
@@ -745,6 +792,13 @@ private fun ClusterPeerCard(
 
 private const val CLUSTER_TLS_ALIAS = "cluster-node"
 private const val CLUSTER_TLS_SUBJECT = "AndroML cluster node"
+
+private fun android.content.Context.hasLocalNetworkAccess(): Boolean =
+    Build.VERSION.SDK_INT < 37 ||
+        ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_LOCAL_NETWORK,
+        ) == PackageManager.PERMISSION_GRANTED
 
 private fun ClusterWorkload.displayName(): String = when (this) {
     ClusterWorkload.InferenceReplica -> "Inference"
