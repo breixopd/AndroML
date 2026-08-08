@@ -2,6 +2,13 @@
 
 All notable changes to AndroML are documented here.
 
+## [1.0.8](https://github.com/breixopd/AndroML/compare/v1.0.7...v1.0.8) (2026-08-08)
+
+
+### Bug Fixes
+
+* **cluster:** make phone offload deterministic ([#19](https://github.com/breixopd/AndroML/issues/19)) ([b1e6cd2](https://github.com/breixopd/AndroML/commit/b1e6cd21cc0a8bcfd655ec055f1b87f1aa720a0c))
+
 ## [1.0.7](https://github.com/breixopd/AndroML/compare/v1.0.6...v1.0.7) (2026-08-03)
 
 
