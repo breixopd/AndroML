@@ -100,6 +100,11 @@ data class ClusterInferenceExecution(
     val result: ClusterInferenceResult,
 )
 
+enum class ClusterPlacementPolicy {
+    Auto,
+    RemoteOnly,
+}
+
 data class ClusterWorkflowStageExecution(
     val placement: RouteDecision,
     val result: ClusterWorkflowStageResult,
@@ -271,6 +276,7 @@ class ClusterController(
         task: ClusterInferenceTask,
         requiredRamBytes: Long = 0L,
         timeoutMillis: Long = DEFAULT_REMOTE_TIMEOUT_MILLIS,
+        placementPolicy: ClusterPlacementPolicy = ClusterPlacementPolicy.Auto,
     ): ClusterInferenceExecution = withContext(Dispatchers.IO) {
         require(requiredRamBytes >= 0L) { "required cluster RAM must not be negative" }
         require(timeoutMillis in 1_000L..10 * 60 * 1_000L) { "cluster execution timeout is out of bounds" }
@@ -300,7 +306,8 @@ class ClusterController(
                 payloadHash = ContentHash.parse(sha256(payload)),
                 idempotencyKey = "${jobId.value}:$attempt",
             )
-            val candidates = (listOf(localNode) + remoteNodes).filterNot { it.peer.id in excluded }
+            val candidates = clusterCandidates(localNode, remoteNodes, placementPolicy)
+                .filterNot { it.peer.id in excluded }
             val decision = try {
                 ClusterRouter().route(request, candidates)
             } catch (error: NoEligibleClusterNode) {
@@ -949,6 +956,8 @@ class ClusterController(
         require(expectedRuntimeId == task.runtimeId) {
             "requested runtime does not match the model artifact format"
         }
+        val localProfile = deviceProfileProvider()
+        val runtimeConfiguration = clusterRuntimeConfiguration(task, localProfile)
         val modelPath = artifactStore.fileFor(task.modelHash.value)
         val descriptor = ParcelFileDescriptor.open(modelPath, ParcelFileDescriptor.MODE_READ_ONLY)
         var session: dev.androml.runtime.service.OpenedInferenceSession? = null
@@ -961,9 +970,9 @@ class ClusterController(
                     contextTokens = task.contextTokens,
                 ),
                 configuration = RuntimeConfiguration(
-                    cpuThreads = task.cpuThreads,
+                    cpuThreads = runtimeConfiguration.cpuThreads,
                     contextTokens = task.contextTokens,
-                    useAcceleration = task.useAcceleration,
+                    useAcceleration = runtimeConfiguration.useAcceleration,
                 ),
                 runtimeId = RuntimeId.parse(task.runtimeId),
                 modelFile = descriptor,
@@ -1075,6 +1084,24 @@ class ClusterController(
                 .joinToString("") { byte -> "%02x".format(byte) }
     }
 }
+
+internal fun clusterCandidates(
+    localNode: ClusterNode,
+    remoteNodes: List<ClusterNode>,
+    placementPolicy: ClusterPlacementPolicy,
+): List<ClusterNode> = when (placementPolicy) {
+    ClusterPlacementPolicy.Auto -> listOf(localNode) + remoteNodes
+    ClusterPlacementPolicy.RemoteOnly -> remoteNodes
+}
+
+internal fun clusterRuntimeConfiguration(
+    task: ClusterInferenceTask,
+    profile: DeviceProfile,
+): RuntimeConfiguration = RuntimeConfiguration(
+    cpuThreads = profile.cpuCoreCount.coerceIn(1, 8),
+    contextTokens = task.contextTokens,
+    useAcceleration = task.useAcceleration && profile.hasVulkan,
+)
 
 /** Stable node name that binds the declared sender to the certificate being presented. */
 internal fun clusterNodeId(fingerprint: CertificateFingerprint): PeerId =

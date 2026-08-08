@@ -560,6 +560,7 @@ private fun PlaygroundScreen(
                                 useAcceleration = optimizedWithBenchmarks.configuration?.useAcceleration ?: false,
                                 runtimeId = runtimeId,
                             ),
+                            placementPolicy = ClusterPlacementPolicy.RemoteOnly,
                         )
                     }
                     output = execution.result.text
@@ -664,7 +665,7 @@ private fun PlaygroundScreen(
                             FilterChip(
                                 selected = distributed,
                                 onClick = { distributed = !distributed },
-                                label = { Text("Distributed", maxLines = 1, softWrap = false) },
+                                label = { Text("Another phone", maxLines = 1, softWrap = false) },
                             )
                         }
                     }
@@ -743,7 +744,7 @@ private fun PlaygroundScreen(
                     if (distributed && selectedWorkload == ModelWorkload.TextGeneration) {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Distributed mode sends the complete request to a paired, freshly-capable node over mTLS; the model must already be installed there.",
+                            "Runs this request on a paired phone over mTLS. The same model must be installed there.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
